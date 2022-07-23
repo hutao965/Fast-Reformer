@@ -19,7 +19,8 @@ include_directories(${PROJECT_SOURCE_DIR}/pybind11/include ${CUDA_TOOLKIT_ROOT_D
 find_package(PythonLibs REQUIRED)
 include_directories(${PYTHON_INCLUDE_DIRS})
 
-# find_package(CUDAToolkit)
+find_package(CUDA)
+find_package(CUDAToolkit)
 
 add_subdirectory(pybind11)
 add_subdirectory(reformer/inference)

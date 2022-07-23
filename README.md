@@ -2,11 +2,11 @@
 Reformer(https://arxiv.org/abs/2001.04451) with cuda implementation
 
 ```bash
-conda install pybind11 -c conda-forge
+git clone -recursive
 pip install transformers
 
 
-sh cmake.sh
+sh make.sh
 cd tests
 python -m unittest
 

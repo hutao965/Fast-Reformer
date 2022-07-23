@@ -1,5 +1,11 @@
 add_library(kernels STATIC kernels.cu)
 add_library(models STATIC models.cu)
+target_link_libraries(
+    models PRIVATE
+    kernels
+    ${CUDA_cublas_LIBRARY}
+)
+# cuda_add_cublas_to_target(models)
 # target_include_directories(kernels INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 # target_include_directories(models INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 # target_link_libraries(models pybind11::headers)

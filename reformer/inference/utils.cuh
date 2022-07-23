@@ -8,6 +8,8 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
+#include <thrust/device_vector.h>
+#include <thrust/copy.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
@@ -47,6 +49,7 @@ inline int py2int(const py::handle &handle) {
 inline float py2float(const py::handle &handle) {
     return std::stof(std::string(py::str(handle)));
 }
+
 
 
 } // namespace FastReformer
