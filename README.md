@@ -11,3 +11,10 @@ cd tests
 python -m unittest
 
 ```
+
+# Goal
+- [] axial embedding
+- [] chunk ffn
+- [] local atten
+- [] lsh atten
+

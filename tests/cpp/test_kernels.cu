@@ -26,7 +26,7 @@ public:
         int mask_size = batch_size * batch_seq_len;
         int output_size = batch_size * batch_seq_len * hidden_size;
         auto output = py::array_t<T>(output_size);
-        auto padding_mask = py::array_t<T>(mask_size);
+        auto padding_mask = py::array_t<int>(mask_size);
 
         int *h_input_ids = static_cast<int*>(input_ids.request().ptr);
         T *h_tok_embd_weights = static_cast<T*>(
@@ -36,14 +36,14 @@ public:
         T *h_pos_embd_weight_1 = static_cast<T*>(
             py::array_t<T>(_weights["embeddings.position_embeddings.weights.1"]).request().ptr);
         T *h_output = static_cast<T*>(output.request().ptr);
-        T *h_pad_mask = static_cast<T*>(padding_mask.request().ptr);
+        int *h_pad_mask = static_cast<int*>(padding_mask.request().ptr);
 
         thrust::device_vector<int> d_input_ids(h_input_ids, h_input_ids + mask_size);
         thrust::device_vector<T> d_tok_embd_weights(h_tok_embd_weights, h_tok_embd_weights + py2int(_config["vocab_size"]) * hidden_size);
         thrust::device_vector<T> d_pos_embd_weight_0(h_pos_embd_weight_0, h_pos_embd_weight_0 + pos_shape_0 * pos_embds_dim_0);
         thrust::device_vector<T> d_pos_embd_weight_1(h_pos_embd_weight_1, h_pos_embd_weight_1 + pos_shape_1 * pos_embds_dim_1);
         thrust::device_vector<T> d_output(output_size);
-        thrust::device_vector<T> d_pad_mask(mask_size);
+        thrust::device_vector<int> d_pad_mask(mask_size);
 
         encoder_embedding_launcher<T>(
             thrust::raw_pointer_cast(d_input_ids.data()),
@@ -75,14 +75,12 @@ public:
         thrust::device_vector<T> d_input(h_input, h_input + size);
         thrust::device_vector<T> d_ln_weight(h_ln_weight, h_ln_weight + norm_size);
         thrust::device_vector<T> d_ln_bias(h_ln_bias, h_ln_bias + norm_size);
-        thrust::device_vector<T> d_output(size);
         layer_norm_launcher<T>(
             thrust::raw_pointer_cast(d_input.data()),
             thrust::raw_pointer_cast(d_ln_weight.data()),
             thrust::raw_pointer_cast(d_ln_bias.data()),
-            eps, norm_size, size,
-            thrust::raw_pointer_cast(d_output.data()));
-        thrust::copy(d_output.cbegin(), d_output.cend(), h_output);
+            eps, norm_size, size);
+        thrust::copy(d_input.cbegin(), d_input.cend(), h_output);
         return output;
     }
 
@@ -95,13 +93,11 @@ public:
         T *h_output = static_cast<T*>(output.request().ptr);
         thrust::device_vector<T> d_input(h_input, h_input + size);
         thrust::device_vector<T> d_bias(h_bias, h_bias + hidden_size);
-        thrust::device_vector<T> d_output(size);
         bias_relu_launcher<T>(
             thrust::raw_pointer_cast(d_input.data()),
             thrust::raw_pointer_cast(d_bias.data()),
-            hidden_size, size,
-            thrust::raw_pointer_cast(d_output.data()));
-        thrust::copy(d_output.cbegin(), d_output.cend(), h_output);
+            hidden_size, size);
+        thrust::copy(d_input.cbegin(), d_input.cend(), h_output);
         return output;
     }
 
@@ -113,12 +109,10 @@ public:
         T *h_input = static_cast<T*>(input.request().ptr);
         T *h_output = static_cast<T*>(output.request().ptr);
         thrust::device_vector<T> d_input(h_input, h_input + size);
-        thrust::device_vector<T> d_output(size);
         softmax_launcher<T>(
             thrust::raw_pointer_cast(d_input.data()),
-            reduce_size, size,
-            thrust::raw_pointer_cast(d_output.data()));
-        thrust::copy(d_output.cbegin(), d_output.cend(), h_output);
+            reduce_size, size);
+        thrust::copy(d_input.cbegin(), d_input.cend(), h_output);
         return output;
     }
 

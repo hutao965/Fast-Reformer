@@ -3,6 +3,7 @@
 #include <cassert>
 #include <vector>
 #include <memory>
+#include <math.h>
 #include <iostream>
 
 #include <cuda_runtime.h>
@@ -10,6 +11,8 @@
 #include <cuda_fp16.h>
 #include <thrust/device_vector.h>
 #include <thrust/copy.h>
+#include <thrust/transform.h>
+#include <thrust/functional.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 

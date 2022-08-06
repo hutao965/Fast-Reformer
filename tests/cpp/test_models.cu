@@ -19,22 +19,48 @@ public:
         T *h_atten_out = static_cast<T*>(atten_out.request().ptr);
         T *h_output = static_cast<T*>(output.request().ptr);
         thrust::device_vector<T> d_atten_out(h_atten_out, h_atten_out + size);
-        thrust::device_vector<T> d_output(size);
-        // _model.encoder->layers[0].chunk_ffn(
-        //     thrust::raw_pointer_cast(d_atten_out.data()),
-        //     thrust::raw_pointer_cast(d_output.data()));
-        thrust::copy(d_output.begin(), d_output.end(), h_output);
+        _model.enc_layers[0].chunk_ffn(thrust::raw_pointer_cast(d_atten_out.data()));
+        thrust::copy(d_atten_out.begin(), d_atten_out.end(), h_output);
         return output;
     }
 
-    py::array_t<T> test_local_atten()
+    py::array_t<T> test_local_atten(
+        py::array_t<T> &hidden_states, py::array_t<int> &atten_mask)
     {
-        return nullptr;
+        int size = hidden_states.size();
+        int mask_size = atten_mask.size();
+        auto output = py::array_t<T>(size);
+        T *h_hidden_states = static_cast<T*>(hidden_states.request().ptr);
+        int *h_atten_mask = static_cast<int*>(atten_mask.request().ptr);
+        T *h_output = static_cast<T*>(output.request().ptr);
+        thrust::device_vector<T> d_hidden_states(h_hidden_states, h_hidden_states + size);
+        thrust::device_vector<int> d_atten_mask(h_atten_mask, h_atten_mask + mask_size);
+        _model.enc_layers[0].local_atten(
+            thrust::raw_pointer_cast(d_hidden_states.data()),
+            thrust::raw_pointer_cast(d_atten_mask.data()));
+        thrust::copy(d_hidden_states.begin(), d_hidden_states.end(), h_output);
+        return output;
     }
 
-    py::array_t<T> test_lsh_atten()
+    py::array_t<T> test_lsh_atten(
+        py::array_t<T> &hidden_states, py::array_t<int> &atten_mask,
+        py::array_t<T> &random_rotations)
     {
-        return nullptr;
+        int size = hidden_states.size();
+        auto output = py::array_t<T>(size);
+        T *h_hidden_states = static_cast<T*>(hidden_states.request().ptr);
+        int *h_atten_mask = static_cast<int*>(atten_mask.request().ptr);
+        T *h_random_rotations = static_cast<T*>(random_rotations.request().ptr);
+        T *h_output = static_cast<T*>(output.request().ptr);
+        thrust::device_vector<T> d_hidden_states(h_hidden_states, h_hidden_states + size);
+        thrust::device_vector<int> d_atten_mask(h_atten_mask, h_atten_mask + atten_mask.size());
+        thrust::device_vector<T> d_random_rotations(h_random_rotations, h_random_rotations + random_rotations.size());
+        _model.enc_layers[1].lsh_atten(
+            thrust::raw_pointer_cast(d_hidden_states.data()),
+            thrust::raw_pointer_cast(d_atten_mask.data()),
+            thrust::raw_pointer_cast(d_random_rotations.data()));
+        thrust::copy(d_hidden_states.begin(), d_hidden_states.end(), h_output);
+        return output;
     }
 
     // py::array_t<T> test_Reformer_layer(
@@ -90,6 +116,10 @@ PYBIND11_MODULE(testmodels, m) {
     py::class_<TestModels<FloatType::FP32>>(m, "TestModels_fp32")
         .def(py::init<py::dict &, py::dict &>())
         .def("test_chunk_ffn", &TestModels<FloatType::FP32>::test_chunk_ffn,
+             py::return_value_policy::reference_internal)
+        .def("test_local_atten", &TestModels<FloatType::FP32>::test_local_atten,
+             py::return_value_policy::reference_internal)
+        .def("test_lsh_atten", &TestModels<FloatType::FP32>::test_lsh_atten,
              py::return_value_policy::reference_internal)
         // .def("test_Reformer_layer", &TestModels<FloatType::FP32>::test_Reformer_layer,
         //      py::return_value_policy::reference_internal)

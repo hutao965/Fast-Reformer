@@ -10,30 +10,65 @@ void encoder_embedding_launcher(
     int pos_embds_dim_0, int pos_embds_dim_1, int pos_shape_0, int pos_shape_1,
     int batch_size, int batch_seq_len, int hidden_size,
     int pad_id, int start_idx_pos_encodings,
-    T *output, T *pad_mask);
+    T *output, int *pad_mask);
 
 template<typename T>
 void layer_norm_launcher(
-    const T *input, const T *weight, const T *bias,
-    T eps, int norm_size, int size, T *output);
+    T *input, const T *weight, const T *bias,
+    T eps, int norm_size, int size);
 
 template<typename T>
 void bias_relu_launcher(
-    const T *input, const T *bias,
-    int hidden_size, int size, T *output);
+    T *input, const T *bias,
+    int hidden_size, int size);
+template<typename T>
+void add_bias_launcher(
+    T *input, const T *bias,
+    int hidden_size, int size);
+
 
 template<typename T>
 void softmax_launcher(
-    const T *input, int reduce_size, int size,
+    T *input, int reduce_size, int size);
+
+template<typename T>
+void atten_split_transpose_launcher(
+    const T *input, int batch_size, int seq_len,
+    int chunk_len, int num_heads, int head_size,
     T *output);
 
+template<typename T>
+void atten_merge_transpose_launcher(
+    const T *input, int batch_size, int seq_len,
+    int chunk_len, int num_heads, int head_size,
+    T *output);
 
-// template<typename T>
-// void split_launcher();
+template<typename T>
+void look_adjacent_launcher(
+    const T *input, int batch_size, int num_heads, int n_chunks,
+    int chunk_len, int head_size, int before, int after,
+    T *output);
 
+template<typename T>
+void local_atten_enc_mask_launcher(
+    T *qk_dots, const int *mask, int batch_size, int num_heads,
+    int n_chunks, int chunk_len, int N);
 
-// template<typename T>
-// void merge_launcher();
+template<typename T>
+void lsh_bucket_argmax_mask_offset_launcher(
+    const T *in, const int *atten_mask,
+    int batch_size, int num_heads, int num_hashes,
+    int seq_len, int num_bucket,
+    int *out);
 
+template<typename T>
+void lsh_gather_by_expansion_launcher(
+    const T *in, const int *idx, int batch_size,
+    int num_heads, int num_hashes, int seq_len, int head_size,
+    T *out);
+
+template<typename T>
+void lsh_len_norm_launcher(
+    const T *in, int norm_size, int size, T norm_scalar, T *out);
 
 } // namespace FastReformer
