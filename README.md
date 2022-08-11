@@ -1,20 +1,24 @@
 # Fast-Reformer
-Reformer(https://arxiv.org/abs/2001.04451) with cuda implementation
-
+Reformer(https://arxiv.org/abs/2001.04451) encoder (inference only) with cuda implementation  
+for my cuda practice  
+  
+The test target is [huggingface reformer](https://github.com/huggingface/transformers/blob/main/src/transformers/models/reformer/modeling_reformer.py)  
+  
 ```bash
-git clone -recursive
 pip install transformers
-
-
+git clone --recursive https://github.com/hutao965/Fast-Reformer.git
+cd Fast-Reformer
 sh make.sh
-cd tests
-python -m unittest
-
+sh test.sh
 ```
 
 # Goal
-- [] axial embedding
-- [] chunk ffn
-- [] local atten
-- [] lsh atten
-
+- [x] reformer model
+  - [x] axial embedding
+  - [x] chunk ffn
+  - [x] local atten
+  - [x] lsh atten
+- [x] unit test
+  - [x] pybind
+- [ ] fp16
+- [ ] profiling
