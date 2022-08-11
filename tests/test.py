@@ -9,6 +9,7 @@ from transformers import (
 )
 
 sys.path.append("../bin/Release")
+sys.path.append("../bin")
 import testmodels
 import testkernels
 

@@ -19,7 +19,7 @@ __forceinline__ __device__ T reduce_warp(T value, F reduction) {
 
 // instance for argmax
 template<typename T, typename F>
-__forceinline__ __device__ thrust::pair<T, int> reduce_warp<thrust::pair<T, int>, F>(thrust::pair<T, int> value, F reduction) {
+__forceinline__ __device__ thrust::pair<T, int> reduce_warp(thrust::pair<T, int> value, F reduction) {
     #pragma unroll
     for (int mask = 16; mask > 0; mask >>= 1)
         value = reduction(value, mask);
@@ -127,9 +127,8 @@ void encoder_embedding_launcher(
     int pad_id, int start_idx_pos_encodings,
     T *output, int *pad_mask) 
 {
-    assert(pos_embds_dims.size() == 2);
-    assert(pos_embds_dims[0] % 32 == 0);
-    assert(pos_embds_dims[1] % 32 == 0);
+    assert(pos_embds_dim_0 % 32 == 0);
+    assert(pos_embds_dim_1 % 32 == 0);
     assert(hidden_size <= 1024);
     encoder_embedding<T><<<dim3(batch_seq_len, batch_size), hidden_size>>>(
         input_ids, tok_embd_weights, pos_embd_weight_0, pos_embd_weight_1,
