@@ -1,5 +1,5 @@
 # Fast-Reformer
-Reformer(https://arxiv.org/abs/2001.04451) encoder (inference only) with cuda implementation  
+[Reformer](https://arxiv.org/abs/2001.04451) encoder (inference only) with cuda implementation  
 for my cuda practice  
   
 The test target is [huggingface reformer](https://github.com/huggingface/transformers/blob/main/src/transformers/models/reformer/modeling_reformer.py)  
