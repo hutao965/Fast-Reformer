@@ -63,51 +63,53 @@ public:
         return output;
     }
 
-    // py::array_t<T> test_Reformer_layer(
-    //     py::array_t<T> &prev_output, py::array_t<T> &hiddens, py::array_t<T> &padding_mask)
-    // {
-    //     int batch_size = hiddens.shape(0);
-    //     int batch_seq_len = hiddens.shape(1);
-    //     int mask_size = padding_mask.size();
-    //     int output_size = hiddens.size();
-    //     auto output = py::array_t<T>(output_size);
+    py::tuple test_Reformer_enc_layer(
+        py::array_t<T> &pre_atten_output, py::array_t<T> &hiddens, py::array_t<int> &padding_mask,
+        py::array_t<T> &random_rotations, int layer_id)
+    {
+        int size = hiddens.size();
+        auto output = py::array_t<T>(size);
+        auto atten_output = py::array_t<T>(size);
+        T *h_pre_atten_output = static_cast<T*>(pre_atten_output.request().ptr);
+        T *h_hiddens = static_cast<T*>(hiddens.request().ptr);
+        int *h_padding_mask = static_cast<int*>(padding_mask.request().ptr);
+        T *h_random_rotations = static_cast<T*>(random_rotations.request().ptr);
+        T *h_output = static_cast<T*>(output.request().ptr);
+        T *h_atten_output = static_cast<T*>(atten_output.request().ptr);
+        thrust::device_vector<T> d_pre_atten_output(h_pre_atten_output, h_pre_atten_output + size);
+        thrust::device_vector<T> d_hiddens(h_hiddens, h_hiddens + size);
+        thrust::device_vector<int> d_padding_mask(h_padding_mask, h_padding_mask + padding_mask.size());
+        thrust::device_vector<T> d_random_rotations(h_random_rotations, h_random_rotations + random_rotations.size());
+        _model.enc_layers[layer_id].infer(
+            thrust::raw_pointer_cast(d_pre_atten_output.data()),
+            thrust::raw_pointer_cast(d_hiddens.data()),
+            thrust::raw_pointer_cast(d_padding_mask.data()),
+            thrust::raw_pointer_cast(d_random_rotations.data()));
+        thrust::copy(d_hiddens.cbegin(), d_hiddens.cend(), h_output);
+        thrust::copy(d_pre_atten_output.cbegin(), d_pre_atten_output.cend(), h_atten_output);
+        return py::make_tuple(output, atten_output);
+    }
 
-    //     T *h_prev_output = static_cast<T*>(prev_output.request().ptr);
-    //     T *h_hiddens = static_cast<T*>(hiddens.request().ptr);
-    //     T *h_padding_mask = static_cast<T*>(padding_mask.request().ptr);
-    //     T *h_output = static_cast<T*>(output.request().ptr);
-    //     thrust::device_vector<T> d_prev_output(h_prev_output, h_prev_output + output_size);
-    //     thrust::device_vector<T> d_hiddens(h_hiddens, h_hiddens + output_size);
-    //     thrust::device_vector<T> d_padding_mask(h_padding_mask, h_padding_mask + mask_size);
-    //     thrust::device_vector<T> d_output(output_size);
-    //     _model.encoder->layers[0].infer(
-    //         thrust::raw_pointer_cast(d_prev_output.data()),
-    //         thrust::raw_pointer_cast(d_hiddens.data()),
-    //         thrust::raw_pointer_cast(d_padding_mask.data()),
-    //         thrust::raw_pointer_cast(d_output.data()),
-    //         batch_size, batch_seq_len);
-    //     thrust::copy(d_output.cbegin(), d_output.cend(), h_output);
-    //     return output;
-    // }
-
-    // py::array_t<T> test_Reformer(py::array_t<int> &input_ids, int pad_id) {
-    //     int batch_size = input_ids.shape(0);
-    //     int batch_seq_len = input_ids.shape(1);
-    //     int input_size = input_ids.size();
-    //     int output_size = input_size * _hidden_size;
-    //     auto output = py::array_t<T>(output_size);
-    //     int *h_input_ids = static_cast<int*>(input_ids.request().ptr);
-    //     T *h_output = static_cast<T*>(output.request().ptr);
-    //     thrust::device_vector<int> d_input_ids(h_input_ids, h_input_ids + input_size);
-    //     thrust::device_vector<T> d_output(output_size);
-    //     _model.infer_one_batch(
-    //         thrust::raw_pointer_cast(d_input_ids.data()),
-    //         thrust::raw_pointer_cast(d_output.data()),
-    //         pad_id, batch_size, batch_seq_len);
-    //     thrust::copy(d_output.cbegin(), d_output.cend(), h_output);
-    //     return output;
-    // }
-
+    py::array_t<T> test_Reformer(
+        py::array_t<int> &input_ids, py::array_t<T> &random_rotations,
+        int pad_id)
+    {
+        int output_size = input_ids.size() * _hidden_size * 2;
+        auto output = py::array_t<T>(output_size);
+        int *h_input_ids = static_cast<int*>(input_ids.request().ptr);
+        T *h_random_rotations = static_cast<T*>(random_rotations.request().ptr);
+        T *h_output = static_cast<T*>(output.request().ptr);
+        thrust::device_vector<int> d_input_ids(h_input_ids, h_input_ids + input_ids.size());
+        thrust::device_vector<T> d_random_rotations(h_random_rotations, h_random_rotations + random_rotations.size());
+        thrust::device_vector<T> d_output(output_size);
+        _model.infer_one_batch(
+            thrust::raw_pointer_cast(d_input_ids.data()),
+            thrust::raw_pointer_cast(d_random_rotations.data()),
+            pad_id,
+            thrust::raw_pointer_cast(d_output.data()));
+        thrust::copy(d_output.cbegin(), d_output.cend(), h_output);
+        return output;
+    }
 };
 
 
@@ -121,9 +123,8 @@ PYBIND11_MODULE(testmodels, m) {
              py::return_value_policy::reference_internal)
         .def("test_lsh_atten", &TestModels<FloatType::FP32>::test_lsh_atten,
              py::return_value_policy::reference_internal)
-        // .def("test_Reformer_layer", &TestModels<FloatType::FP32>::test_Reformer_layer,
-        //      py::return_value_policy::reference_internal)
-        // .def("test_Reformer", &TestModels<FloatType::FP32>::test_Reformer,
-        //      py::return_value_policy::reference_internal)
-        ;
+        .def("test_Reformer_enc_layer", &TestModels<FloatType::FP32>::test_Reformer_enc_layer,
+             py::return_value_policy::reference_internal)
+        .def("test_Reformer", &TestModels<FloatType::FP32>::test_Reformer,
+             py::return_value_policy::reference_internal);
 }

@@ -57,8 +57,6 @@ __forceinline__ __device__ T reduce_block_max(T value) {
     );
 }
 
-
-
 template<typename T>
 __forceinline__ __device__ thrust::pair<T, int> reduce_block_argmax(thrust::pair<T, int> value) {
     return reduce_block(
@@ -72,7 +70,6 @@ __forceinline__ __device__ thrust::pair<T, int> reduce_block_argmax(thrust::pair
         thrust::make_pair(static_cast<T>(-FLT_MAX), 0)
     );
 }
-
 
 
 // TODO float4
@@ -390,10 +387,10 @@ template void look_adjacent_launcher<float>(
 // blockDim.x = N * chunk_len
 template<typename T>
 __global__ void local_atten_enc_mask(
-    T *qk_dots, const int *mask, int num_heads,
+    T *qk_dots, const int *mask, T mask_value, int num_heads,
     int n_chunks, int chunk_len)
 {
-    int mask_value = __ldg(&mask[
+    int m = __ldg(&mask[
         threadIdx.x +
         (blockIdx.x / chunk_len + (blockIdx.y / num_heads) * n_chunks) * blockDim.x
     ]);
@@ -401,21 +398,21 @@ __global__ void local_atten_enc_mask(
     int index = 
         threadIdx.x +
         (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x;
-    qk_dots[index] = mask_value ? qk_dots[index] : static_cast<T>(-1e9f);
+    qk_dots[index] = m ? qk_dots[index] : mask_value;
 
 }
 
 
 template<typename T>
 void local_atten_enc_mask_launcher(
-    T *qk_dots, const int *mask, int batch_size, int num_heads,
+    T *qk_dots, const int *mask, T mask_value, int batch_size, int num_heads,
     int n_chunks, int chunk_len, int N)
 {
     local_atten_enc_mask<T><<<dim3(n_chunks * chunk_len, batch_size * num_heads), N * chunk_len>>>(
-        qk_dots, mask, num_heads, n_chunks, chunk_len);
+        qk_dots, mask, mask_value, num_heads, n_chunks, chunk_len);
 }
 template void local_atten_enc_mask_launcher<float>(
-    float *qk_dots, const int *mask, int batch_size, int num_heads,
+    float *qk_dots, const int *mask, float mask_value, int batch_size, int num_heads,
     int n_chunks, int chunk_len, int N);
 
 
@@ -533,5 +530,168 @@ void lsh_len_norm_launcher(
 }
 template void lsh_len_norm_launcher<float>(
     const float *in, int norm_size, int size, float norm_scalar, float *out);
+
+
+/**
+ * atten mask and self mask
+ * gridDim.x = bs * num_heads * num_hashes*seq_len/chunk_len * chunk_len
+ * blockDim.x = N * chunk_len
+ * 
+ * @param qk_dots [bs, num_heads, num_hashes*seq_len/chunk_len, chunk_len,  N * chunk_len]
+ * @param q_idx [bs, num_heads, num_hashes*seq_len/chunk_len, chunk_len]
+ * @param k_idx [bs, num_heads, num_hashes*seq_len/chunk_len, N * chunk_len]
+ * @param atten_mask [bs, seq_len]
+ */
+template<typename T>
+__global__ void lsh_enc_mask(
+    T *qk_dots, const int *q_idx, const int *k_idx, const int *atten_mask,
+    T mask_value, T self_mask_value, int num_heads, int num_hashes,
+    int seq_len, int chunk_len)
+{
+    T value = qk_dots[threadIdx.x + blockIdx.x * blockDim.x];
+    // mask
+    int k_gather_idx = __ldg(&k_idx[
+        threadIdx.x +
+        (blockIdx.x / chunk_len) * blockDim.x
+    ]);
+    int mask = __ldg(&atten_mask[
+        k_gather_idx +
+        (blockIdx.x / (num_heads * num_hashes * seq_len)) * seq_len
+    ]);
+    // self mask
+    int q = __ldg(&q_idx[
+        blockIdx.x
+    ]);
+    int k = __ldg(&k_idx[
+        threadIdx.x +
+        (blockIdx.x / chunk_len) * blockDim.x
+    ]);
+    bool self_mask = q != k;
+
+    value = mask ? value : mask_value;
+    value = self_mask ? value : self_mask_value;
+    qk_dots[threadIdx.x + blockIdx.x * blockDim.x] = value;
+}
+
+template<typename T>
+void lsh_enc_mask_launcher(
+    T *qk_dots, const int *q_idx, const int *k_idx, const int *atten_mask,
+    T mask_value, T self_mask_value, int batch_size, int num_heads, int num_hashes,
+    int seq_len, int chunk_len, int N)
+{
+    dim3 grid(batch_size * num_heads * num_hashes * seq_len);
+    lsh_enc_mask<T><<<grid, N * chunk_len>>>(
+        qk_dots, q_idx, k_idx, atten_mask, mask_value, self_mask_value,
+        num_heads, num_hashes, seq_len, chunk_len);
+}
+
+template void lsh_enc_mask_launcher<float>(
+    float *qk_dots, const int *q_idx, const int *k_idx, const int *atten_mask,
+    float mask_value, float self_mask_value, int batch_size, int num_heads, int num_hashes,
+    int seq_len, int chunk_len, int N);
+
+
+/**
+ * softmax version that also return logits
+ */
+template<typename T>
+__global__ void softmax_with_logits(T *input, T *logits) {
+    T value = input[blockIdx.x * blockDim.x + threadIdx.x];
+    T max_value = reduce_block_max<T>(value);
+    value -= max_value;
+    value = expf(value);
+    T sum_value = reduce_block_sum<T>(value);
+    input[blockIdx.x * blockDim.x + threadIdx.x] = value / sum_value;
+    if (threadIdx.x == 0) {
+        logits[blockIdx.x] = max_value + logf(sum_value);
+    }
+}
+
+template<typename T>
+void softmax_with_logits_launcher(
+    T *input, T *logits, int reduce_size, int size)
+{
+    softmax_with_logits<T><<<size / reduce_size, reduce_size>>>(input, logits);
+}
+template void softmax_with_logits_launcher<float>(
+    float *input, float *logits, int reduce_size, int size);
+
+
+/**
+ * gridDim.x = seq_len
+ * gridDim.y = bs * num_heads
+ * blockDim.x = head_size
+ * 
+ * @param in [bs, num_heads, num_hashes, seq_len, head_size]
+ * @param logits [bs, num_heads, num_hashes, seq_len]
+ * @param out [bs, num_heads, seq_len, head_size]
+ */
+template<typename T, int num_hashes>
+__global__ void sum_up_hashes(
+    const T *in, const T *logits, T *out)
+{
+    T vs[num_hashes];
+    T ls[num_hashes];
+    # pragma unroll
+    for (int i = 0; i < num_hashes; i ++) {
+        int logits_idx = 
+            blockIdx.x +
+            (i + blockIdx.y * num_hashes) * gridDim.x;
+        vs[i] = in[threadIdx.x + logits_idx * blockDim.x];
+        ls[i] = __ldg(&logits[logits_idx]);
+    }
+    T logsumexp = static_cast<T>(0.0f);
+    T *max_l = thrust::max_element(thrust::device, ls, ls + num_hashes);
+    # pragma unroll
+    for (int i = 0; i < num_hashes; i ++) {
+        logsumexp += expf(ls[i] - *max_l);
+    }
+    logsumexp = logf(logsumexp) + *max_l;
+    T res = static_cast<T>(0.0f);
+    # pragma unroll
+    for (int i = 0; i < num_hashes; i ++) {
+        res += vs[i] * expf(ls[i] - logsumexp);
+    }
+    out[
+        threadIdx.x +
+        (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x
+    ] = res;
+}
+
+template<typename T>
+void sum_up_hashes_launcher(
+    const T *in, const T *logits,
+    int batch_size, int num_heads, int num_hashes,
+    int seq_len, int head_size,
+    T *out)
+{
+    dim3 grid(seq_len, batch_size * num_heads);
+    dim3 block(head_size);
+    switch(num_hashes) {
+        case 1:
+            thrust::copy(
+                thrust::device,
+                in, in + batch_size * num_heads * seq_len * head_size,
+                out);
+            break;
+        case 2:
+            sum_up_hashes<T, 2><<<grid, block>>>(in, logits, out);
+            break;
+        case 4:
+            sum_up_hashes<T, 4><<<grid, block>>>(in, logits, out);
+            break;
+        case 8:
+            sum_up_hashes<T, 8><<<grid, block>>>(in, logits, out);
+            break;
+        default:
+            throw "num_hashes must be 1, 2, 4 or 8";
+    }
+}
+template void sum_up_hashes_launcher<float>(
+    const float *in, const float *logits,
+    int batch_size, int num_heads, int num_hashes,
+    int seq_len, int head_size,
+    float *out);
+
 
 } // namespace FastReformer

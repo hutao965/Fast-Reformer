@@ -12,6 +12,7 @@
 #include <thrust/device_vector.h>
 #include <thrust/copy.h>
 #include <thrust/transform.h>
+#include <thrust/gather.h>
 #include <thrust/functional.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -20,7 +21,6 @@ namespace py = pybind11;
 
 namespace FastReformer {
 
-// const __constant__ 
 // traits
 // fp16
 
@@ -33,11 +33,14 @@ template<>
 class TypeTraits<FloatType::FP32> {
 public:
     using DataType = float;
-    static cudaDataType_t const cublasComputeType = CUDA_R_32F;
-    static cudaDataType_t const cublasAType = CUDA_R_32F;
-    static cudaDataType_t const cublasBType = CUDA_R_32F;
-    static cudaDataType_t const cublasCType = CUDA_R_32F;
+    static const cudaDataType_t cublasComputeType = CUDA_R_32F;
+    static const cudaDataType_t cublasAType = CUDA_R_32F;
+    static const cudaDataType_t cublasBType = CUDA_R_32F;
+    static const cudaDataType_t cublasCType = CUDA_R_32F;
+    static constexpr DataType mask_value = -1e9f;
+    static constexpr DataType self_mask_value = -1e5f;
 };
+
 
 
 // allocate __constant__ or reigster directly

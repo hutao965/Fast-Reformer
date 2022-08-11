@@ -115,12 +115,7 @@ public:
         thrust::copy(d_input.cbegin(), d_input.cend(), h_output);
         return output;
     }
-
-
-    
-
 };
-
 
 
 PYBIND11_MODULE(testkernels, m) {
