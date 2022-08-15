@@ -55,11 +55,23 @@ void local_atten_enc_mask_launcher(
     int n_chunks, int chunk_len, int N);
 
 template<typename T>
+void repeat_launcher(
+    const T *in, int dim0, int dim1, int repeat_num,
+    T *out);
+
+template<typename T>
 void lsh_bucket_argmax_mask_offset_launcher(
     const T *in, const int *atten_mask,
     int batch_size, int num_heads, int num_hashes,
     int seq_len, int num_bucket,
     int *out);
+
+void arrange_last_launcher(
+    int *out, int last_size, int size);
+
+void lsh_scatter_undo_idx_launcher(
+    int *sorted_idx, int *undo_sorted_idx,
+    int batch_size, int num_heads, int num_hashes, int seq_len);
 
 template<typename T>
 void lsh_gather_by_expansion_launcher(
@@ -82,10 +94,20 @@ void softmax_with_logits_launcher(
     T *input, T *logits, int reduce_size, int size);
 
 template<typename T>
+void lsh_undo_sort_launcher(
+    const int *undo_sort_idx, const T *vec, const T *logits,
+    int batch_size, int num_heads, int num_hashes,
+    int seq_len, int head_size,
+    T *rev_vec, T *rev_logits);
+
+template<typename T>
 void sum_up_hashes_launcher(
     const T *in, const T *logits,
     int batch_size, int num_heads, int num_hashes,
     int seq_len, int head_size,
     T *out);
+
+template<typename T>
+void add_launcher(T *first, T *second, int size);
 
 } // namespace FastReformer

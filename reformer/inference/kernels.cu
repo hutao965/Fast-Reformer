@@ -145,8 +145,6 @@ template void encoder_embedding_launcher<float>(
     float *output, int *pad_mask);
 
 
-
-// TODO float4
 template<typename T>
 __global__ void layer_norm(
     T *input, const T *weight, const T* bias,
@@ -161,7 +159,7 @@ __global__ void layer_norm(
     T var = diff * diff;
     var = reduce_block_sum<T>(var) / norm_size;
     value = diff * rsqrtf(var + eps) * gamma + beta;
-    input[blockIdx.x * blockDim.x + threadIdx.x] = value;
+    input[blockIdx.x * norm_size + threadIdx.x] = value;
 }
 /**
  * @param input [size/norm_size, norm_size]
@@ -183,10 +181,6 @@ template void layer_norm_launcher<float>(
     float eps, int norm_size, int size);
 
 
-
-
-// TODO hidden size > 1024
-// TODO float4
 template<typename T>
 __global__ void bias_relu(T *input, const T *bias) {
     T value = input[blockIdx.x * blockDim.x + threadIdx.x] + __ldg(&bias[threadIdx.x]);
@@ -213,8 +207,7 @@ template void bias_relu_launcher<float>(
 
 template<typename T>
 __global__ void add_bias(T *input, const T *bias) {
-    input[blockIdx.x * blockDim.x + threadIdx.x] = 
-        input[blockIdx.x * blockDim.x + threadIdx.x] + __ldg(&bias[threadIdx.x]);
+    input[blockIdx.x * blockDim.x + threadIdx.x] += __ldg(&bias[threadIdx.x]);
 }
 
 template<typename T>
@@ -250,8 +243,6 @@ template void softmax_launcher<float>(
 
 
 
-// [bs, n_chunks, chunk_len, num_heads, head_size] ->
-// [bs, num_heads, n_chunks, chunk_len, head_size]
 template<typename T>
 __global__ void atten_split_transpose(
     const T *input, int batch_size, int n_chunks,
@@ -275,6 +266,8 @@ __global__ void atten_split_transpose(
 
 }
 
+// [bs, n_chunks, chunk_len, num_heads, head_size] ->
+// [bs, num_heads, n_chunks, chunk_len, head_size]
 template<typename T>
 void atten_split_transpose_launcher(
     const T *input, int batch_size, int seq_len,
@@ -290,8 +283,7 @@ template void atten_split_transpose_launcher<float>(
     float *output);
 
 
-// [bs, num_heads, n_chunks, chunk_len, head_size] ->
-// [bs, n_chunks, chunk_len, num_heads, head_size]
+
 template<typename T>
 __global__ void atten_merge_transpose(
     const T *input, int batch_size, int n_chunks,
@@ -313,7 +305,8 @@ __global__ void atten_merge_transpose(
         n_chunks * idx_0)))
     ] = value;
 }
-
+// [bs, num_heads, n_chunks, chunk_len, head_size] ->
+// [bs, n_chunks, chunk_len, num_heads, head_size]
 template<typename T>
 void atten_merge_transpose_launcher(
     const T *input, int batch_size, int seq_len,
@@ -329,11 +322,7 @@ template void atten_merge_transpose_launcher<float>(
     float *output);
 
 
-// [bs * num_heads, n_chunks, chunk_len * head_size] ->
-// [bs * num_heads, n_chunks, (Num_bef + Num_aft + 1), chunk_len * head_size]
-// chunk_len * head_size = K * block_size
-// gridDim.x = n_chunks
-// gridDim.y = bs * num_heads
+
 template<typename T>
 __global__ void look_adjacent(
     const T *input, int last_dim_size,
@@ -357,7 +346,11 @@ __global__ void look_adjacent(
         }
     }
 }
-
+// [bs * num_heads, n_chunks, chunk_len * head_size] ->
+// [bs * num_heads, n_chunks, (Num_bef + Num_aft + 1), chunk_len * head_size]
+// chunk_len * head_size = K * block_size
+// gridDim.x = n_chunks
+// gridDim.y = bs * num_heads
 template<typename T>
 void look_adjacent_launcher(
     const T *input, int batch_size, int num_heads, int n_chunks,
@@ -380,10 +373,7 @@ template void look_adjacent_launcher<float>(
     float *output);
 
 
-// [bs, num_heads, n_chunks, chunk_len,  N * chunk_len] * [bs, n_chunks, N * chunk_len]
-// gridDim.x = n_chunks * chunk_len
-// gridDim.y = batch_size * num_heads
-// blockDim.x = N * chunk_len
+
 template<typename T>
 __global__ void local_atten_enc_mask(
     T *qk_dots, const int *mask, T mask_value, int num_heads,
@@ -401,7 +391,10 @@ __global__ void local_atten_enc_mask(
 
 }
 
-
+// [bs, num_heads, n_chunks, chunk_len,  N * chunk_len] * [bs, n_chunks, N * chunk_len]
+// gridDim.x = n_chunks * chunk_len
+// gridDim.y = batch_size * num_heads
+// blockDim.x = N * chunk_len
 template<typename T>
 void local_atten_enc_mask_launcher(
     T *qk_dots, const int *mask, T mask_value, int batch_size, int num_heads,
@@ -413,6 +406,39 @@ void local_atten_enc_mask_launcher(
 template void local_atten_enc_mask_launcher<float>(
     float *qk_dots, const int *mask, float mask_value, int batch_size, int num_heads,
     int n_chunks, int chunk_len, int N);
+
+
+template<typename T>
+__global__ void repeat(const T *in, T *out) {
+    out[
+        threadIdx.x +
+        (blockIdx.x + (blockIdx.y + blockIdx.z * gridDim.y) * gridDim.x) * blockDim.x
+    ] =
+    __ldg(&in[
+        threadIdx.x +
+        (blockIdx.x + blockIdx.z * gridDim.x) * blockDim.x
+    ]);
+}
+
+/**
+ * @param in [dim0, dim1]
+ * @param out [dim0, repeat_num, dim1]
+ */
+template<typename T>
+void repeat_launcher(
+    const T *in, int dim0, int dim1, int repeat_num,
+    T *out)
+{
+    // TODO if dim1 very small
+    // [dim0, dim1/blocksize, blocksize] ->
+    // [dim0, repeat_num, dim1/blocksize, blocksize]
+    int blocksize = min(1024, dim1);
+    dim3 grid(dim1/blocksize, repeat_num, dim0);
+    repeat<T><<<grid, blocksize>>>(in, out);
+}
+template void repeat_launcher<float>(
+    const float *in, int dim0, int dim1, int repeat_num,
+    float *out);
 
 
 
@@ -475,12 +501,64 @@ template void lsh_bucket_argmax_mask_offset_launcher<float>(
     int *out);
 
 
+__global__ void arrange_last(int *out) {
+    out[
+        threadIdx.x +
+        (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x
+    ] = threadIdx.x + blockIdx.x * blockDim.x;
+}
+
 /**
- * gather the num_hashes*seq_len dim
- * @param in [bs, num_heads, seq_len, head_size] (expand to [bs, num_heads, num_hashes*seq_len, head_size])
- * @param idx [bs, num_heads, num_hashes*seq_len]
- * @param out [bs, num_heads, num_hashes*seq_len, head_size]
+ * @param out [size/last_size, last_size]
  */
+void arrange_last_launcher(
+    int *out, int last_size, int size)
+{
+    // [size/last_size, last_size/blocksize, blocksize]
+    int blocksize = min(1024, last_size);
+    dim3 grid(last_size/blocksize, size/last_size);
+    arrange_last<<<grid, blocksize>>>(out);
+}
+
+
+__global__ void lsh_scatter_undo_idx(
+    int *sorted_idx, int *undo_sorted_idx, int seq_len)
+{
+    int idx = sorted_idx[
+        threadIdx.x +
+        (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x
+    ];
+    // arange num_hashes*seq_len
+    int value = threadIdx.x + blockIdx.x * blockDim.x;
+
+    undo_sorted_idx[
+        idx +
+        blockIdx.y * gridDim.x * blockDim.x] = value;
+
+    sorted_idx[
+        threadIdx.x +
+        (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x
+    ] = idx % seq_len;
+}
+
+/**
+ * produce undo_sorted_idx, and also make sorted_idx %= seq_len
+ * @param sorted_idx [bs*num_heads, num_hashes*seq_len]
+ * @param undo_sorted_idx [bs*num_heads, num_hashes*seq_len]
+ */
+void lsh_scatter_undo_idx_launcher(
+    int *sorted_idx, int *undo_sorted_idx,
+    int batch_size, int num_heads, int num_hashes, int seq_len)
+{
+    // [bs*num_heads, num_hashes*seq_len/blocksize, blocksize]
+    int blocksize = min(1024, num_hashes * seq_len);
+    dim3 grid(num_hashes * seq_len / blocksize, batch_size * num_heads);
+    lsh_scatter_undo_idx<<<grid, blocksize>>>(
+        sorted_idx, undo_sorted_idx, seq_len);
+}
+
+
+
 template<typename T>
 __global__ void lsh_gather_by_expansion(
     const T *in, const int *idx, int seq_len, T *out)
@@ -495,7 +573,12 @@ __global__ void lsh_gather_by_expansion(
         (gather_idx % seq_len + blockIdx.y * seq_len) * blockDim.x
     ];
 }
-
+/**
+ * gather the num_hashes*seq_len dim
+ * @param in [bs, num_heads, seq_len, head_size] (expand to [bs, num_heads, num_hashes*seq_len, head_size])
+ * @param idx [bs, num_heads, num_hashes*seq_len]
+ * @param out [bs, num_heads, num_hashes*seq_len, head_size]
+ */
 template<typename T>
 void lsh_gather_by_expansion_launcher(
     const T *in, const int *idx, int batch_size,
@@ -616,6 +699,52 @@ template void softmax_with_logits_launcher<float>(
     float *input, float *logits, int reduce_size, int size);
 
 
+template<typename T>
+__global__ void lsh_undo_sort(
+    const int *undo_sort_idx, const T *vec, const T *logits,
+    T *rev_vec, T *rev_logits)
+{
+    int idx = undo_sort_idx[blockIdx.x + blockIdx.y * gridDim.x];
+    rev_vec[
+        threadIdx.x +
+        (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x
+    ] =
+    vec[
+        threadIdx.x +
+        (idx + blockIdx.y * gridDim.x) * blockDim.x
+    ];
+
+    if (threadIdx.x == 0) {
+        rev_logits[blockIdx.x + blockIdx.y * gridDim.x] = logits[idx + blockIdx.y * gridDim.x];
+    }
+}
+
+/**
+ * gather
+ * @param undo_sort_idx [bs*num_heads, num_hashes*seq_len]
+ * @param vec [bs*num_heads, num_hashes*seq_len, head_size]
+ * @param logits [bs*num_heads, num_hashes*seq_len]
+ * @param rev_vec [bs*num_heads, num_hashes*seq_len, head_size]
+ * @param rev_logits [bs*num_heads, num_hashes*seq_len]
+ */
+template<typename T>
+void lsh_undo_sort_launcher(
+    const int *undo_sort_idx, const T *vec, const T *logits,
+    int batch_size, int num_heads, int num_hashes,
+    int seq_len, int head_size,
+    T *rev_vec, T *rev_logits)
+{
+    dim3 grid(num_hashes * seq_len, batch_size * num_heads);
+    lsh_undo_sort<T><<<grid, head_size>>>(
+        undo_sort_idx, vec, logits, rev_vec, rev_logits);
+}
+template void lsh_undo_sort_launcher<float>(
+    const int *undo_sort_idx, const float *vec, const float *logits,
+    int batch_size, int num_heads, int num_hashes,
+    int seq_len, int head_size,
+    float *rev_vec, float *rev_logits);
+
+
 /**
  * gridDim.x = seq_len
  * gridDim.y = bs * num_heads
@@ -691,6 +820,24 @@ template void sum_up_hashes_launcher<float>(
     int batch_size, int num_heads, int num_hashes,
     int seq_len, int head_size,
     float *out);
+
+
+template<typename T>
+__global__ void add(T *first, T *second) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    T sum = first[idx] + second[idx];
+    first[idx] = sum;
+    second[idx] = sum;
+}
+/**
+ * first and second both store the result
+ */
+template<typename T>
+void add_launcher(T *first, T *second, int size) {
+    int blocksize = min(1024, size);
+    add<T><<<size/blocksize, blocksize>>>(first, second);
+}
+template void add_launcher<float>(float *first, float *second, int size);
 
 
 } // namespace FastReformer

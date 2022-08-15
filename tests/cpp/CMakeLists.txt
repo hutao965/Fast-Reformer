@@ -7,4 +7,8 @@ pybind11_add_module(
     testmodels MODULE
     test_models.cu
 )
-target_link_libraries(testmodels PUBLIC models)
+target_link_libraries(
+    testmodels PUBLIC
+    models
+    #cuda.lib
+)

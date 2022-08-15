@@ -207,12 +207,10 @@ public:
         int *_d_buf_bucket = reinterpret_cast<int*>(_d_buf_rotated_vec + _batch_size * _num_bucket / 2 * _num_heads * _num_hashes * _batch_seq_len);
         // _d_buf_bucket + _batch_size * _num_heads * _num_hashes * _batch_seq_len);
 
-        int *_d_buf_indices = reinterpret_cast<int*>(last);
-        int *_d_buf_sorted_bucket_idx = _d_buf_indices + _num_hashes * _batch_seq_len;
+        int *_d_buf_sorted_bucket_idx = reinterpret_cast<int*>(last);
         int *_d_buf_undo_sorted_bucket_idx = _d_buf_sorted_bucket_idx + _batch_size * _num_heads * _num_hashes * _batch_seq_len;
-        int *_d_buf_sorted_bucket_idx_per_hash = _d_buf_undo_sorted_bucket_idx + _batch_size * _num_heads * _num_hashes * _batch_seq_len;
-        int *_d_buf_q_idx = _d_buf_sorted_bucket_idx_per_hash;
-        int *_d_buf_kv_idx = _d_buf_q_idx + _batch_size * _num_heads * _num_hashes * _batch_seq_len;
+        int *_d_buf_q_idx = _d_buf_sorted_bucket_idx;
+        int *_d_buf_kv_idx = _d_buf_undo_sorted_bucket_idx + _batch_size * _num_heads * _num_hashes * _batch_seq_len;
         // _batch_size * _num_heads * _num_hashes * _batch_seq_len * N
 
         T *_d_buf_rev_out = _d_buf_temp + _batch_size * _all_head_size * _num_hashes * _batch_seq_len;
@@ -241,35 +239,23 @@ public:
         // ===== hash qk vector =====
         // vector [bs, num_heads, seq_len, head_size] ->
         //        [bs, num_heads, num_hashes, seq_len, head_size]
-        thrust::for_each(
-            thrust::device,
-            thrust::make_counting_iterator(0),
-            thrust::make_counting_iterator(_batch_size * _num_heads * _num_hashes),
-            [_d_buf_qk, _d_buf_qk_expand,
-            _num_hashes=_num_hashes,
-            size=_batch_seq_len*_head_size] __device__ (int i) {
-                thrust::copy(
-                    thrust::device,
-                    _d_buf_qk + (i / _num_hashes) * size,
-                    _d_buf_qk + (i / _num_hashes) * size + size,
-                    _d_buf_qk_expand + i * size);
-            }
-        );
+        repeat_launcher(
+            _d_buf_qk,
+            _batch_size * _num_heads,
+            _batch_seq_len * _head_size,
+            _num_hashes,
+            _d_buf_qk_expand);
+
         // random_rotations [num_heads, num_hashes, head_size, num_bucket/2] ->
         //                  [bs, num_heads, num_hashes, head_size, num_bucket/2]
-        thrust::for_each(
-            thrust::device,
-            thrust::make_counting_iterator(0),
-            thrust::make_counting_iterator(_batch_size),
-            [random_rotations, _d_buf_rrotations_expand,
-            size=_all_head_size*_num_hashes*_num_bucket/2] __device__ (int i) {
-                thrust::copy(
-                    thrust::device,
-                    random_rotations,
-                    random_rotations + size,
-                    _d_buf_rrotations_expand + i * size);
-            }
-        );
+        repeat_launcher(
+            random_rotations,
+            1,
+            _all_head_size*_num_hashes*_num_bucket/2,
+            _batch_size,
+            _d_buf_rrotations_expand);
+
+
         // [bs, num_heads, num_hashes, seq_len, head_size] X
         // [bs, num_heads, num_hashes, head_size, num_bucket/2]
         // -> rotated_vecs [bs, num_heads, num_hashes, seq_len, num_bucket/2]
@@ -294,21 +280,15 @@ public:
             _d_buf_bucket);
 
         // ===== sort =====
-        // sort buckets
-        // [bs, num_heads, num_hashes * seq_len]
         // arange
-        thrust::for_each(
-            thrust::device,
-            thrust::make_counting_iterator(0),
-            thrust::make_counting_iterator(_batch_size * _num_heads),
-            [_d_buf_sorted_bucket_idx, size=_num_hashes*_batch_seq_len] __device__ (int i) {
-                thrust::sequence(
-                    thrust::device,
-                    _d_buf_sorted_bucket_idx + i * size,
-                    _d_buf_sorted_bucket_idx + (i + 1) * size);
-            }
-        );
+        // [bs, num_heads, num_hashes * seq_len]
+        arrange_last_launcher(
+            _d_buf_sorted_bucket_idx,
+            _num_hashes * _batch_seq_len,
+            _batch_size * _num_heads * _num_hashes * _batch_seq_len);
+
         // sort
+        // TODO cub sort
         thrust::for_each(
             thrust::device,
             thrust::make_counting_iterator(0),
@@ -322,45 +302,23 @@ public:
                     _d_buf_sorted_bucket_idx + i * size);
             }
         );
-        // arange
-        thrust::sequence(
-            thrust::device,
-            _d_buf_indices,
-            _d_buf_indices + _num_hashes * _batch_seq_len);
-        // scatter
-        thrust::for_each(
-            thrust::device,
-            thrust::make_counting_iterator(0),
-            thrust::make_counting_iterator(_batch_size * _num_heads),
-            [_d_buf_undo_sorted_bucket_idx, _d_buf_sorted_bucket_idx, _d_buf_indices,
-            size=_num_hashes*_batch_seq_len] __device__ (int i) {
-                thrust::scatter(
-                    thrust::device,
-                    _d_buf_indices,
-                    _d_buf_indices + size,
-                    _d_buf_sorted_bucket_idx + i * size,
-                    _d_buf_undo_sorted_bucket_idx + i * size);
-            }
-        );
-        // sorted_bucket_idx_per_hash
-        thrust::transform(
-            thrust::device,
-            _d_buf_sorted_bucket_idx,
-            _d_buf_sorted_bucket_idx + _batch_size * _num_heads * _num_hashes * _batch_seq_len,
-            _d_buf_sorted_bucket_idx_per_hash,
-            thrust::placeholders::_1 % _batch_seq_len
-        );
+
+        // scatter undo_idx from arrange(num_hashes*seq_len)
+        // sorted_idx %= seq_len
+        lsh_scatter_undo_idx_launcher(
+            _d_buf_sorted_bucket_idx, _d_buf_undo_sorted_bucket_idx,
+            _batch_size, _num_heads, _num_hashes, _batch_seq_len);
 
         // gather
         // qk/v vectors [bs, num_heads, seq_len, head_size]
-        //_d_buf_sorted_bucket_idx_per_hash [bs, num_heads, num_hashes * seq_len]
+        //_d_buf_sorted_bucket_idx [bs, num_heads, num_hashes * seq_len]
         // -> [bs, num_heads, num_hashes*seq_len, head_size]
         lsh_gather_by_expansion_launcher(
-            _d_buf_qk, _d_buf_sorted_bucket_idx_per_hash, _batch_size,
+            _d_buf_qk, _d_buf_sorted_bucket_idx, _batch_size,
             _num_heads, _num_hashes, _batch_seq_len, _head_size,
             _d_buf_gather_qk);
         lsh_gather_by_expansion_launcher(
-            _d_buf_v, _d_buf_sorted_bucket_idx_per_hash, _batch_size,
+            _d_buf_v, _d_buf_sorted_bucket_idx, _batch_size,
             _num_heads, _num_hashes, _batch_seq_len, _head_size,
             _d_buf_gather_v);
 
@@ -404,10 +362,10 @@ public:
             _cublasComputeType, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
         
         // mask
-        // _d_buf_q_idx = _d_buf_sorted_bucket_idx_per_hash [bs, num_heads, num_hashes*seq_len/chunk_len, chunk_len]
+        // _d_buf_q_idx = _d_buf_sorted_bucket_idx [bs, num_heads, num_hashes*seq_len/chunk_len, chunk_len]
         // _d_buf_kv_idx [bs, num_heads, num_hashes*seq_len/chunk_len, N * chunk_len]
         look_adjacent_launcher(
-            _d_buf_sorted_bucket_idx_per_hash, _batch_size, _num_heads, _num_hashes * _batch_seq_len / _atten_lsh_chunk_len,
+            _d_buf_q_idx, _batch_size, _num_heads, _num_hashes * _batch_seq_len / _atten_lsh_chunk_len,
             _atten_lsh_chunk_len, 1,
             _atten_lsh_num_chunks_before, _atten_lsh_num_chunks_after,
             _d_buf_kv_idx);
@@ -441,45 +399,16 @@ public:
             _cublasComputeType, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
 
         // ==== reverse sort =====
-        // gather out_vec (reverse sort)
-        // _d_buf_temp [bs, num_heads, num_hashes*seq_len, head_size]
-        // _d_buf_undo_sorted_bucket_idx [bs, num_heads, num_hashes*seq_len] ->
+        // gather out and logits (reverse sort)
+        // _d_buf_undo_sorted_bucket_idx [bs, num_heads, num_hashes*seq_len]
+        // _d_buf_temp [bs, num_heads, num_hashes*seq_len, head_size] ->
         // _d_buf_rev_out [bs, num_heads, num_hashes*seq_len, head_size]
-        thrust::for_each(
-            thrust::device,
-            thrust::make_counting_iterator(0),
-            thrust::make_counting_iterator(_batch_size * _num_heads * _num_hashes * _batch_seq_len),
-            [_d_buf_temp, _d_buf_undo_sorted_bucket_idx, _d_buf_rev_out,
-            _head_size=_head_size, dimx=_num_hashes * _batch_seq_len] __device__ (int i) {
-                int idx = 
-                    _d_buf_undo_sorted_bucket_idx[i] +
-                    (i / dimx) * dimx;
-                thrust::copy(
-                    thrust::device,
-                    _d_buf_temp + idx * _head_size,
-                    _d_buf_temp + (idx + 1) * _head_size,
-                    _d_buf_rev_out + i * _head_size);
-            }
-        );
-
-        // gather logits (reverse sort)
-        // _d_buf_logits [bs, num_heads, num_hashes*seq_len]
-        // _d_buf_undo_sorted_bucket_idx [bs, num_heads, num_hashes*seq_len] ->
+        // _d_buf_logits [bs, num_heads, num_hashes*seq_len] ->
         // _d_buf_rev_logits [bs, num_heads, num_hashes*seq_len]
-        thrust::for_each(
-            thrust::device,
-            thrust::make_counting_iterator(0),
-            thrust::make_counting_iterator(_batch_size * _num_heads),
-            [_d_buf_logits, _d_buf_undo_sorted_bucket_idx, _d_buf_rev_logits,
-            size=_num_hashes*_batch_seq_len] __device__ (int i) {
-                thrust::gather(
-                    thrust::device,
-                    _d_buf_undo_sorted_bucket_idx + i * size,
-                    _d_buf_undo_sorted_bucket_idx + (i + 1) * size,
-                    _d_buf_logits + i * size,
-                    _d_buf_rev_logits + i * size);
-            }
-        );
+        lsh_undo_sort_launcher(
+            _d_buf_undo_sorted_bucket_idx, _d_buf_temp, _d_buf_logits,
+            _batch_size, _num_heads, _num_hashes, _batch_seq_len, _head_size,
+            _d_buf_rev_out, _d_buf_rev_logits);
 
         // sum up hash
         // _d_buf_rev_out [bs, num_heads, num_hashes*seq_len, head_size]
@@ -624,20 +553,19 @@ public:
     {
         // ffn buffer size : bs * ffn_chunk_size * ffn_size
         T *_d_buf_ffn = reinterpret_cast<T*>(_ffn_buffer);
-        
-        assert(_batch_seq_len % _ffn_chunk_size == 0);
+
+        layer_norm_launcher(
+            x,
+            thrust::raw_pointer_cast(_d_ffn_ln_weight.data()),
+            thrust::raw_pointer_cast(_d_ffn_ln_bias.data()),
+            _eps,
+            _hidden_size,
+            _batch_size * _batch_seq_len * _hidden_size);
+
         int num_chunks = _batch_seq_len / _ffn_chunk_size;
         for (int i = 0; i < num_chunks; i ++) {
             T *chunked_x = x + i * _batch_size * _ffn_chunk_size * _hidden_size;
 
-            layer_norm_launcher(
-                chunked_x,
-                thrust::raw_pointer_cast(_d_ffn_ln_weight.data()),
-                thrust::raw_pointer_cast(_d_ffn_ln_bias.data()),
-                _eps,
-                _hidden_size,
-                _batch_size * _ffn_chunk_size * _hidden_size);
-            
             cublasGemmEx(
                 _cublasHandle, CUBLAS_OP_T, CUBLAS_OP_N,
                 _ffn_size, _batch_size * _ffn_chunk_size, _hidden_size,
@@ -648,7 +576,6 @@ public:
                 _d_buf_ffn, _cublasCType, _ffn_size,
                 _cublasComputeType, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
 
-            
             bias_relu_launcher(
                 _d_buf_ffn,
                 thrust::raw_pointer_cast(_d_ffn_dense_bias.data()),
@@ -664,15 +591,13 @@ public:
                 &_zero,
                 chunked_x, _cublasCType, _hidden_size,
                 _cublasComputeType, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
-
-
-            add_bias_launcher(
-                chunked_x,
-                thrust::raw_pointer_cast(_d_ffn_output_bias.data()),
-                _hidden_size,
-                _batch_size * _ffn_chunk_size * _hidden_size);
-
         }
+
+        add_bias_launcher(
+            x,
+            thrust::raw_pointer_cast(_d_ffn_output_bias.data()),
+            _hidden_size,
+            _batch_size * _batch_seq_len * _hidden_size);
     }
 
     /**
@@ -699,26 +624,12 @@ public:
         }
 
         // atten_out += pre_atten_output
-        thrust::transform(
-            thrust::device,
-            atten_output, atten_output + size,
-            pre_atten_output,
-            atten_output,
-            thrust::placeholders::_1 + thrust::placeholders::_2);
-        // copy out
-        thrust::copy(
-            thrust::device,
-            atten_output, atten_output + size,
-            pre_atten_output);
+        // pre_atten_output = atten_out
+        add_launcher(atten_output, pre_atten_output, size);
 
         // hidden_states += ffn(atten_out)
         chunk_ffn(atten_output);
-        thrust::transform(
-            thrust::device,
-            hiddens, hiddens + size,
-            atten_output,
-            hiddens,
-            thrust::placeholders::_1 + thrust::placeholders::_2);
+        add_launcher(hiddens, atten_output, size);
     }
 };
 template class ReformerLayer<FloatType::FP32>;
@@ -819,8 +730,7 @@ public:
                     sizeof(T) * _batch_size * _batch_seq_len * _num_heads * _num_bucket / 2 * _num_hashes +
                     sizeof(int) * _batch_size * _num_heads * _num_hashes * _batch_seq_len,
 
-                    sizeof(int) * _num_hashes * _batch_seq_len +
-                    sizeof(int) * 3 * _batch_size * _num_heads * _num_hashes * _batch_seq_len +
+                    sizeof(int) * 2 * _batch_size * _num_heads * _num_hashes * _batch_seq_len +
                     sizeof(int) * _batch_size * _num_heads * _num_hashes * _batch_seq_len * lsh_N) // lsh atten
                 // sizeof(T) * _batch_size * _ffn_chunk_size * _ffn_size // ffn
             );
@@ -914,8 +824,7 @@ public:
                     thrust::device,
                     _d_buf_hiddens + i * _hidden_size,
                     _d_buf_hiddens + (i + 1) * _hidden_size,
-                    output + (2 * i + 1) * _hidden_size
-                );
+                    output + (2 * i + 1) * _hidden_size);
             }
         );
         

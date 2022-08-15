@@ -189,16 +189,16 @@ class Test(unittest.TestCase):
         hiddens = self._random_hiddens(
             (self._batch_size, self._batch_seq_len, self.config.hidden_size)
         )
-        for layer_id in [0]:
+        for layer_id in [0, 1]:
             hf_result = self.hf_model.encoder.layers[layer_id](
                 prev_atten_out.cuda(),
                 hiddens.cuda(),
                 padding_mask.cuda()
             )
             fast_result = self.test_models.test_Reformer_enc_layer(
-                prev_atten_out,
-                hiddens,
-                padding_mask,
+                prev_atten_out.numpy(),
+                hiddens.numpy(),
+                padding_mask.numpy(),
                 self._random_rotation(),
                 layer_id
             )
@@ -210,7 +210,7 @@ class Test(unittest.TestCase):
             self._assert_allclose(
                 fast_result[1],
                 hf_result.attn_output.detach().cpu().numpy(),
-                atol=1e-2
+                atol=2e-2
             )
 
     def test_model(self):
