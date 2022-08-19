@@ -27,14 +27,14 @@ __forceinline__ __device__ thrust::pair<T, int> reduce_warp(thrust::pair<T, int>
 }
 
 template<typename T, typename F>
-__forceinline__ __device__ T reduce_block(T value, F reduction, T init_value) {
+__forceinline__ __device__ T reduce_block(T value, F reduction, T null_value) {
     value = reduce_warp(value, reduction);
     __shared__ T s[32];
     int warpId = threadIdx.x >> 5;
     int laneId = threadIdx.x & 31;
     if (laneId == 0) s[warpId] = value;
     __syncthreads();
-    value = (laneId < ((blockDim.x + 31) >> 5)) ? s[laneId] : init_value;
+    value = (laneId < ((blockDim.x + 31) >> 5)) ? s[laneId] : null_value;
     value = reduce_warp(value, reduction);
     return value;
 }
@@ -48,31 +48,62 @@ __forceinline__ __device__ T reduce_block_sum(T value) {
     );
 }
 
-template<typename T>
-__forceinline__ __device__ T reduce_block_max(T value) {
+__forceinline__ __device__ float reduce_block_max(float value) {
     return reduce_block(
         value,
-        [](T x, T y){ return max(x, y); },
-        static_cast<T>(-FLT_MAX)
+        [](float x, float y){ return max(x, y); },
+        -FLT_MAX
     );
 }
 
-template<typename T>
-__forceinline__ __device__ thrust::pair<T, int> reduce_block_argmax(thrust::pair<T, int> value) {
+__forceinline__ __device__ thrust::pair<float, int> reduce_block_argmax(thrust::pair<float, int> value) {
     return reduce_block(
         value,
-        [](thrust::pair<T, int> x, int mask){
-            T other_first = __shfl_xor_sync(0xffffffff, x.first, mask, 32);
+        [](thrust::pair<float, int> x, int mask){
+            float other_first = __shfl_xor_sync(0xffffffff, x.first, mask, 32);
             int other_second = __shfl_xor_sync(0xffffffff, x.second, mask, 32);
             return x.first >= other_first ?
                    x : thrust::make_pair(other_first, other_second);
         },
-        thrust::make_pair(static_cast<T>(-FLT_MAX), 0)
+        thrust::make_pair(-FLT_MAX, 0)
     );
 }
 
+// 1, 1, ..., 1 -> 1, 2, ..., 32
+template<typename T>
+__forceinline__ __device__ T reduce_warp_prefix_sum(T value, int laneId) {
+    #pragma unroll
+    for (int STRIDE = 1; STRIDE <= 16; STRIDE <<= 1) {
+        T temp = __shfl_up_sync(0xffffffff, value, STRIDE, 32);
+        value = laneId >= STRIDE ? temp + value : value;
+    }
+    return value;
+}
 
-// TODO float4
+// prefix sum for radix sort
+// 1, 1, ..., 1 -> 0, 1, ..., 127
+template<typename T>
+__forceinline__ __device__ T reduce_block_prefix_sum(T value) {
+    int warpId = threadIdx.x >> 5;
+    int laneId = threadIdx.x & 31;
+    value = reduce_warp_prefix_sum(value, laneId);
+    // sum for each warp
+    __shared__ T s[32];
+    if (laneId == 31) s[warpId] = value;
+    __syncthreads();
+    if (warpId == 0) {
+        T prefix = s[laneId];
+        prefix = reduce_warp_prefix_sum(prefix, laneId);
+        s[laneId] = prefix;
+    }
+    __syncthreads();
+    value = __shfl_up_sync(0xffffffff, value, 1, 32);
+    if (laneId == 0) value = static_cast<T>(0.0f);
+    if (warpId != 0) value += s[warpId - 1];
+    return value;
+}
+
+
 template<typename T>
 __global__ void encoder_embedding(
     const int *input_ids, const T *tok_embd_weights,
@@ -130,7 +161,7 @@ void encoder_embedding_launcher(
     assert(pos_embds_dim_0 % 32 == 0);
     assert(pos_embds_dim_1 % 32 == 0);
     assert(hidden_size <= 1024);
-    encoder_embedding<T><<<dim3(batch_seq_len, batch_size), hidden_size>>>(
+    encoder_embedding<<<dim3(batch_seq_len, batch_size), hidden_size>>>(
         input_ids, tok_embd_weights, pos_embd_weight_0, pos_embd_weight_1,
         pos_embds_dim_0, pos_embds_dim_1, pos_shape_0, pos_shape_1,
         hidden_size, pad_id, start_idx_pos_encodings,
@@ -154,10 +185,10 @@ __global__ void layer_norm(
     T value = input[blockIdx.x * norm_size + threadIdx.x];
     T gamma = __ldg(&weight[threadIdx.x]);
     T beta = __ldg(&bias[threadIdx.x]);
-    T mean = reduce_block_sum<T>(value) / norm_size;
+    T mean = reduce_block_sum(value) / norm_size;
     T diff = value - mean;
     T var = diff * diff;
-    var = reduce_block_sum<T>(var) / norm_size;
+    var = reduce_block_sum(var) / norm_size;
     value = diff * rsqrtf(var + eps) * gamma + beta;
     input[blockIdx.x * norm_size + threadIdx.x] = value;
 }
@@ -173,7 +204,7 @@ void layer_norm_launcher(
     T eps, int norm_size, int size)
 {
     assert(norm_size <= 1024);
-    layer_norm<T><<<size / norm_size, norm_size>>>(
+    layer_norm<<<size / norm_size, norm_size>>>(
         input, weight, bias, eps);
 }
 template void layer_norm_launcher<float>(
@@ -197,7 +228,7 @@ template<typename T>
 void bias_relu_launcher(
     T *input, const T *bias, int hidden_size, int size)
 {
-    bias_relu<T><<<size / hidden_size, hidden_size>>>(
+    bias_relu<<<size / hidden_size, hidden_size>>>(
         input, bias);
 }
 template void bias_relu_launcher<float>(
@@ -214,7 +245,7 @@ template<typename T>
 void add_bias_launcher(
     T *input, const T *bias, int hidden_size, int size)
 {
-    add_bias<T><<<size / hidden_size, hidden_size>>>(
+    add_bias<<<size / hidden_size, hidden_size>>>(
         input, bias);
 }
 template void add_bias_launcher<float>(
@@ -226,9 +257,9 @@ template void add_bias_launcher<float>(
 template<typename T>
 __global__ void softmax(T *input) {
     T value = input[blockIdx.x * blockDim.x + threadIdx.x];
-    value -= reduce_block_max<T>(value);
+    value -= reduce_block_max(value);
     value = expf(value);
-    value /= reduce_block_sum<T>(value);
+    value /= reduce_block_sum(value);
     input[blockIdx.x * blockDim.x + threadIdx.x] = value;
 }
 
@@ -236,7 +267,7 @@ template<typename T>
 void softmax_launcher(
     T *input, int reduce_size, int size)
 {
-    softmax<T><<<size / reduce_size, reduce_size>>>(input);
+    softmax<<<size / reduce_size, reduce_size>>>(input);
 }
 template void softmax_launcher<float>(
     float *input, int reduce_size, int size);
@@ -274,7 +305,7 @@ void atten_split_transpose_launcher(
     int chunk_len, int num_heads, int head_size,
     T *output)
 {
-    atten_split_transpose<T><<<batch_size * seq_len, num_heads * head_size>>>(
+    atten_split_transpose<<<batch_size * seq_len, num_heads * head_size>>>(
         input, batch_size, seq_len/chunk_len, chunk_len, num_heads, head_size, output);
 }
 template void atten_split_transpose_launcher<float>(
@@ -313,7 +344,7 @@ void atten_merge_transpose_launcher(
     int chunk_len, int num_heads, int head_size,
     T *output)
 {
-    atten_merge_transpose<T><<<batch_size * num_heads * seq_len, head_size>>>(
+    atten_merge_transpose<<<batch_size * num_heads * seq_len, head_size>>>(
         input, batch_size, seq_len/chunk_len, chunk_len, num_heads, head_size, output);
 }
 template void atten_merge_transpose_launcher<float>(
@@ -360,7 +391,7 @@ void look_adjacent_launcher(
     // head_size can be 1, so should not use head_size as block_size
     int last_dim_size = chunk_len * head_size;
     int block_size = min(1024, last_dim_size);
-    look_adjacent<T><<<dim3(n_chunks, batch_size * num_heads), block_size>>>(
+    look_adjacent<<<dim3(n_chunks, batch_size * num_heads), block_size>>>(
         input, chunk_len * head_size, before, after, before + after + 1, output);
 }
 template void look_adjacent_launcher<int>(
@@ -400,7 +431,7 @@ void local_atten_enc_mask_launcher(
     T *qk_dots, const int *mask, T mask_value, int batch_size, int num_heads,
     int n_chunks, int chunk_len, int N)
 {
-    local_atten_enc_mask<T><<<dim3(n_chunks * chunk_len, batch_size * num_heads), N * chunk_len>>>(
+    local_atten_enc_mask<<<dim3(n_chunks * chunk_len, batch_size * num_heads), N * chunk_len>>>(
         qk_dots, mask, mask_value, num_heads, n_chunks, chunk_len);
 }
 template void local_atten_enc_mask_launcher<float>(
@@ -434,7 +465,7 @@ void repeat_launcher(
     // [dim0, repeat_num, dim1/blocksize, blocksize]
     int blocksize = min(1024, dim1);
     dim3 grid(dim1/blocksize, repeat_num, dim0);
-    repeat<T><<<grid, blocksize>>>(in, out);
+    repeat<<<grid, blocksize>>>(in, out);
 }
 template void repeat_launcher<float>(
     const float *in, int dim0, int dim1, int repeat_num,
@@ -456,7 +487,7 @@ __global__ void lsh_bucket_argmax(
         threadIdx.x
     );
     p = p.first > 0 ? p : thrust::make_pair(-p.first, p.second + blockDim.x);
-    p = reduce_block_argmax<T>(p);
+    p = reduce_block_argmax(p);
     if (threadIdx.x == 0) {
         out[blockIdx.x] = p.second;
     }
@@ -466,7 +497,6 @@ __global__ void lsh_bucket_argmax(
  * @param in [bs, num_heads, num_hashes, seq_len]
  * @param atten_mask [bs, seq_len]
  */
-template<typename T>
 __global__ void lsh_bucket_mask_offset(
     int *in, const int *atten_mask, int num_bucket,
     int num_heads, int num_hashes)
@@ -489,9 +519,9 @@ void lsh_bucket_argmax_mask_offset_launcher(
     int seq_len, int num_bucket,
     int *out)
 {
-    lsh_bucket_argmax<T><<<batch_size * num_heads * num_hashes * seq_len, num_bucket/2>>>(
+    lsh_bucket_argmax<<<batch_size * num_heads * num_hashes * seq_len, num_bucket/2>>>(
         in, out);
-    lsh_bucket_mask_offset<T><<<batch_size * num_heads * num_hashes, seq_len>>>(
+    lsh_bucket_mask_offset<<<batch_size * num_heads * num_hashes, seq_len>>>(
         out, atten_mask, num_bucket + 1, num_heads, num_hashes);
 }
 template void lsh_bucket_argmax_mask_offset_launcher<float>(
@@ -501,24 +531,130 @@ template void lsh_bucket_argmax_mask_offset_launcher<float>(
     int *out);
 
 
-__global__ void arrange_last(int *out) {
-    out[
-        threadIdx.x +
-        (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x
-    ] = threadIdx.x + blockIdx.x * blockDim.x;
+// __global__ void arrange_last(int *out) {
+//     out[
+//         threadIdx.x +
+//         (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x
+//     ] = threadIdx.x + blockIdx.x * blockDim.x;
+// }
+
+// /**
+//  * @param out [size/last_size, last_size]
+//  */
+// void arrange_last_launcher(
+//     int *out, int last_size, int size)
+// {
+//     // [size/last_size, last_size/blocksize, blocksize]
+//     int blocksize = min(1024, last_size);
+//     dim3 grid(last_size/blocksize, size/last_size);
+//     arrange_last<<<grid, blocksize>>>(out);
+// }
+
+
+
+template<typename T, int ITEMS_PER_THREAD,
+         int BLOCK_SIZE=128, int BEGIN_BIT=0, int END_BIT=sizeof(T)*8, int RADIX_BITS=4>
+__global__ void block_unsigned_radix_sort(T *in, int *idx) {
+    // linear load, line->ITEM_PER_THREAD, row->BLOCK_SIZE
+    // 0, 1, ..., items_per_thread-1,
+    // items_per_thread, ..., 2*items_per_thread-1,
+    // ...
+    T keys[ITEMS_PER_THREAD];
+    int values[ITEMS_PER_THREAD];
+    __shared__ T smem_keys[ITEMS_PER_THREAD * BLOCK_SIZE];
+    __shared__ int smem_values[ITEMS_PER_THREAD * BLOCK_SIZE];
+
+    // load
+    #pragma unroll
+    for (int i = 0; i < ITEMS_PER_THREAD; i++) {
+        keys[i] = in[threadIdx.x * ITEMS_PER_THREAD + i + blockIdx.x * ITEMS_PER_THREAD * BLOCK_SIZE];
+        values[i] = threadIdx.x * ITEMS_PER_THREAD + i;
+    }
+
+    #pragma unroll
+    for (int start = BEGIN_BIT; start < END_BIT; start += RADIX_BITS) {
+        int pass_bits = RADIX_BITS < END_BIT - start ? RADIX_BITS : END_BIT - start;
+        // shift extractor
+        auto digit_extractor = [start, pass_bits](T k) -> uint32_t {
+            return uint32_t(k >> T(start)) & uint32_t((1 << pass_bits) - 1);
+        };
+        
+        // rank keys
+        // ranks = prev_bucket_ranks (ranks of prev buckets) +
+        //         prev_lines_ranks (ranks of this bucket and prev lines) + 
+        //         line_ranks (ranks of this bucket and this line)
+        int bucket_counter[1<<RADIX_BITS] {};
+        int ranks[ITEMS_PER_THREAD] {};
+        uint32_t digits[ITEMS_PER_THREAD] {};
+
+        #pragma unroll
+        for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ITEM++) {
+            digits[ITEM] = digit_extractor(keys[ITEM]);
+            // add line_ranks,
+            ranks[ITEM] = bucket_counter[digits[ITEM]];
+            bucket_counter[digits[ITEM]] += 1;
+        }
+
+        int bucket_prefix_sum_accum = 0;
+        #pragma unroll
+        for (int BIT = 0; BIT < (1<<RADIX_BITS); BIT++) {
+            int prev_lines_rank = reduce_block_prefix_sum(bucket_counter[BIT]);
+            int prev_bucket_rank = bucket_prefix_sum_accum;
+            bucket_prefix_sum_accum += reduce_block_sum(bucket_counter[BIT]);
+            // prev_lines_rank and prev_bucket_rank
+            bucket_counter[BIT] = prev_lines_rank + prev_bucket_rank;
+        }
+
+        #pragma unroll
+        for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ITEM++) {
+            ranks[ITEM] += bucket_counter[digits[ITEM]];
+        }
+
+        // scatter to smem
+        for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ITEM++) {
+            smem_keys[ranks[ITEM]] = keys[ITEM];
+            smem_values[ranks[ITEM]] = values[ITEM];
+        }
+        __syncthreads();
+        #pragma unroll
+        for (int i = 0; i < ITEMS_PER_THREAD; i++) {
+            keys[i] = smem_keys[threadIdx.x * ITEMS_PER_THREAD + i];
+            values[i] = smem_values[threadIdx.x * ITEMS_PER_THREAD + i];
+        }
+    }
+
+    #pragma unroll
+    for (int i = 0; i < ITEMS_PER_THREAD; i++) {
+        in[threadIdx.x * ITEMS_PER_THREAD + i + blockIdx.x * ITEMS_PER_THREAD * BLOCK_SIZE] = keys[i];
+        idx[threadIdx.x * ITEMS_PER_THREAD + i + blockIdx.x * ITEMS_PER_THREAD * BLOCK_SIZE] = values[i];
+    }
 }
 
-/**
- * @param out [size/last_size, last_size]
- */
-void arrange_last_launcher(
-    int *out, int last_size, int size)
-{
-    // [size/last_size, last_size/blocksize, blocksize]
-    int blocksize = min(1024, last_size);
-    dim3 grid(last_size/blocksize, size/last_size);
-    arrange_last<<<grid, blocksize>>>(out);
+template<typename T>
+void block_unsigned_radix_sort_launcher(T *in, int *idx, int grid, int N) {
+    constexpr int BLOCK_SIZE = 128;
+    switch(N) {
+        case 128:
+            block_unsigned_radix_sort<T, 128/BLOCK_SIZE><<<grid, BLOCK_SIZE>>>(in, idx);
+            break;
+        case 256:
+            block_unsigned_radix_sort<T, 256/BLOCK_SIZE><<<grid, BLOCK_SIZE>>>(in, idx);
+            break;
+        case 512:
+            block_unsigned_radix_sort<T, 512/BLOCK_SIZE><<<grid, BLOCK_SIZE>>>(in, idx);
+            break;
+        case 1024:
+            block_unsigned_radix_sort<T, 1024/BLOCK_SIZE><<<grid, BLOCK_SIZE>>>(in, idx);
+            break;
+        case 2048:
+            block_unsigned_radix_sort<T, 2048/BLOCK_SIZE><<<grid, BLOCK_SIZE>>>(in, idx);
+            break;
+        default:
+            throw "num_hashes * seq_len must be 128, 256, 512, 1024 or 2048";
+    }
 }
+template void block_unsigned_radix_sort_launcher<int>(int *in, int *idx, int grid, int N);
+
 
 
 __global__ void lsh_scatter_undo_idx(
@@ -558,7 +694,6 @@ void lsh_scatter_undo_idx_launcher(
 }
 
 
-
 template<typename T>
 __global__ void lsh_gather_by_expansion(
     const T *in, const int *idx, int seq_len, T *out)
@@ -586,7 +721,7 @@ void lsh_gather_by_expansion_launcher(
     T *out)
 {
     dim3 grid(num_hashes * seq_len, batch_size * num_heads);
-    lsh_gather_by_expansion<T><<<grid, head_size>>>(
+    lsh_gather_by_expansion<<<grid, head_size>>>(
         in, idx, seq_len, out);
 }
 template void lsh_gather_by_expansion_launcher<float>(
@@ -608,7 +743,7 @@ template<typename T>
 void lsh_len_norm_launcher(
     const T *in, int norm_size, int size, T norm_scalar, T *out)
 {
-    lsh_len_norm<T><<<size/norm_size, norm_size>>>(in, norm_scalar, out);
+    lsh_len_norm<<<size/norm_size, norm_size>>>(in, norm_scalar, out);
 }
 template void lsh_len_norm_launcher<float>(
     const float *in, int norm_size, int size, float norm_scalar, float *out);
@@ -662,7 +797,7 @@ void lsh_enc_mask_launcher(
     int seq_len, int chunk_len, int N)
 {
     dim3 grid(batch_size * num_heads * num_hashes * seq_len);
-    lsh_enc_mask<T><<<grid, N * chunk_len>>>(
+    lsh_enc_mask<<<grid, N * chunk_len>>>(
         qk_dots, q_idx, k_idx, atten_mask, mask_value, self_mask_value,
         num_heads, num_hashes, seq_len, chunk_len);
 }
@@ -679,10 +814,10 @@ template void lsh_enc_mask_launcher<float>(
 template<typename T>
 __global__ void softmax_with_logits(T *input, T *logits) {
     T value = input[blockIdx.x * blockDim.x + threadIdx.x];
-    T max_value = reduce_block_max<T>(value);
+    T max_value = reduce_block_max(value);
     value -= max_value;
     value = expf(value);
-    T sum_value = reduce_block_sum<T>(value);
+    T sum_value = reduce_block_sum(value);
     input[blockIdx.x * blockDim.x + threadIdx.x] = value / sum_value;
     if (threadIdx.x == 0) {
         logits[blockIdx.x] = max_value + logf(sum_value);
@@ -693,7 +828,7 @@ template<typename T>
 void softmax_with_logits_launcher(
     T *input, T *logits, int reduce_size, int size)
 {
-    softmax_with_logits<T><<<size / reduce_size, reduce_size>>>(input, logits);
+    softmax_with_logits<<<size / reduce_size, reduce_size>>>(input, logits);
 }
 template void softmax_with_logits_launcher<float>(
     float *input, float *logits, int reduce_size, int size);
@@ -735,7 +870,7 @@ void lsh_undo_sort_launcher(
     T *rev_vec, T *rev_logits)
 {
     dim3 grid(num_hashes * seq_len, batch_size * num_heads);
-    lsh_undo_sort<T><<<grid, head_size>>>(
+    lsh_undo_sort<<<grid, head_size>>>(
         undo_sort_idx, vec, logits, rev_vec, rev_logits);
 }
 template void lsh_undo_sort_launcher<float>(
@@ -835,7 +970,7 @@ __global__ void add(T *first, T *second) {
 template<typename T>
 void add_launcher(T *first, T *second, int size) {
     int blocksize = min(1024, size);
-    add<T><<<size/blocksize, blocksize>>>(first, second);
+    add<<<size/blocksize, blocksize>>>(first, second);
 }
 template void add_launcher<float>(float *first, float *second, int size);
 

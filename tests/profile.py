@@ -120,5 +120,5 @@ class Profile():
 
 if __name__ == "__main__":
     p = Profile()
-    p.profile_local_atten()
+    p.profile_model()
     

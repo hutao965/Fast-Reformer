@@ -66,8 +66,10 @@ void lsh_bucket_argmax_mask_offset_launcher(
     int seq_len, int num_bucket,
     int *out);
 
-void arrange_last_launcher(
-    int *out, int last_size, int size);
+// void arrange_last_launcher(
+//     int *out, int last_size, int size);
+template<typename T>
+void block_unsigned_radix_sort_launcher(T *in, int *idx, int grid, int N);
 
 void lsh_scatter_undo_idx_launcher(
     int *sorted_idx, int *undo_sorted_idx,

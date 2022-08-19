@@ -83,10 +83,10 @@ public:
         _atten_local_num_chunks_after(py2int(config["local_num_chunks_after"])),
         _ffn_size(py2int(config["feed_forward_size"])),
         _ffn_chunk_size(py2int(config["chunk_size_feed_forward"])),
-        _eps(static_cast<T>(py2float(config["layer_norm_eps"]))),
-        _one(static_cast<T>(1.0f)),
-        _zero(static_cast<T>(0.0f)),
-        _norm_scalar(static_cast<T>(1/sqrt(_head_size)))
+        _eps(py2float(config["layer_norm_eps"])),
+        _one(1.0f),
+        _zero(0.0f),
+        _norm_scalar(1/sqrt(_head_size))
     {
         // assign weights
         T *h_atten_ln_weight = static_cast<T*>(py::array_t<T>(weights[
@@ -281,27 +281,32 @@ public:
 
         // ===== sort =====
         // arange
-        // [bs, num_heads, num_hashes * seq_len]
-        arrange_last_launcher(
-            _d_buf_sorted_bucket_idx,
-            _num_hashes * _batch_seq_len,
-            _batch_size * _num_heads * _num_hashes * _batch_seq_len);
+        // arrange_last_launcher(
+        //     _d_buf_sorted_bucket_idx,
+        //     _num_hashes * _batch_seq_len,
+        //     _batch_size * _num_heads * _num_hashes * _batch_seq_len);
 
-        // sort
-        // TODO cub sort
-        thrust::for_each(
-            thrust::device,
-            thrust::make_counting_iterator(0),
-            thrust::make_counting_iterator(_batch_size * _num_heads),
-            [_d_buf_sorted_bucket_idx, _d_buf_bucket,
-            size=_num_hashes*_batch_seq_len] __device__ (int i) {
-                thrust::stable_sort_by_key(
-                    thrust::device,
-                    _d_buf_bucket + i * size,
-                    _d_buf_bucket + (i + 1) * size,
-                    _d_buf_sorted_bucket_idx + i * size);
-            }
-        );
+        // // sort
+        // thrust::for_each(
+        //     thrust::device,
+        //     thrust::make_counting_iterator(0),
+        //     thrust::make_counting_iterator(_batch_size * _num_heads),
+        //     [_d_buf_sorted_bucket_idx, _d_buf_bucket,
+        //     size=_num_hashes*_batch_seq_len] __device__ (int i) {
+        //         thrust::stable_sort_by_key(
+        //             thrust::device,
+        //             _d_buf_bucket + i * size,
+        //             _d_buf_bucket + (i + 1) * size,
+        //             _d_buf_sorted_bucket_idx + i * size);
+        //     }
+        // );
+
+        // [bs, num_heads, num_hashes * seq_len]
+        block_unsigned_radix_sort_launcher(
+            _d_buf_bucket,
+            _d_buf_sorted_bucket_idx,
+            _batch_size * _num_heads,
+            _num_hashes * _batch_seq_len);
 
         // scatter undo_idx from arrange(num_hashes*seq_len)
         // sorted_idx %= seq_len
@@ -698,7 +703,7 @@ public:
         _atten_local_num_chunks_after(py2int(config["local_num_chunks_after"])),
         _ffn_size(py2int(config["feed_forward_size"])),
         _ffn_chunk_size(py2int(config["chunk_size_feed_forward"])),
-        _eps(static_cast<T>(py2float(config["layer_norm_eps"])))
+        _eps(py2float(config["layer_norm_eps"]))
     {
         // TODO kernels set stream
         _stream = 0;
@@ -795,8 +800,7 @@ public:
             thrust::device,
             _d_buf_hiddens,
             _d_buf_hiddens + _batch_size * _batch_seq_len * _hidden_size,
-            _d_buf_pre_atten_out
-        );
+            _d_buf_pre_atten_out);
 
         // enc
         for (auto &layer : enc_layers) {

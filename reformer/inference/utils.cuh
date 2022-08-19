@@ -11,11 +11,6 @@
 #include <cuda_fp16.h>
 #include <thrust/device_vector.h>
 #include <thrust/copy.h>
-#include <thrust/transform.h>
-#include <thrust/gather.h>
-#include <thrust/functional.h>
-// #include <cub/cub.cuh>
-// #include <cudaProfiler.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
