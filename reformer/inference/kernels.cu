@@ -2,13 +2,14 @@
 
 namespace FastReformer {
 
-//TODO multi small fixed block size
-// TODO add stream
-// TODO fp16
-// TODO template for common hidden size (1024 768 and so on)
+template<typename T> __forceinline__ __device__ T max_value();
+template<> __forceinline__ __device__ float max_value<float>() { return FLT_MAX; }
+template<> __forceinline__ __device__ __half max_value<__half>() { return __half(65504.0f); }
+// __hmax unusable in cuda10.2
+__forceinline__ __device__ __half max(const __half x, const __half y) { return x > y ? x : y; }
+__forceinline__ __device__ float max(const float x, const float y) { return fmaxf(x, y); }
 
 
-// TODO half2 version
 template<typename T, typename F>
 __forceinline__ __device__ T reduce_warp(T value, F reduction) {
     #pragma unroll
@@ -44,28 +45,30 @@ __forceinline__ __device__ T reduce_block_sum(T value) {
     return reduce_block(
         value,
         [](T x, T y){ return x + y; },
-        static_cast<T>(0.0f)
+        T(0.0f)
     );
 }
 
-__forceinline__ __device__ float reduce_block_max(float value) {
+template<typename T>
+__forceinline__ __device__ T reduce_block_max(T value) {
     return reduce_block(
         value,
-        [](float x, float y){ return max(x, y); },
-        -FLT_MAX
+        [](T x, T y){ return max(x, y); },
+        -max_value<T>()
     );
 }
 
-__forceinline__ __device__ thrust::pair<float, int> reduce_block_argmax(thrust::pair<float, int> value) {
+template<typename T>
+__forceinline__ __device__ thrust::pair<T, int> reduce_block_argmax(thrust::pair<T, int> value) {
     return reduce_block(
         value,
-        [](thrust::pair<float, int> x, int mask){
-            float other_first = __shfl_xor_sync(0xffffffff, x.first, mask, 32);
+        [](thrust::pair<T, int> x, int mask){
+            T other_first = __shfl_xor_sync(0xffffffff, x.first, mask, 32);
             int other_second = __shfl_xor_sync(0xffffffff, x.second, mask, 32);
             return x.first >= other_first ?
                    x : thrust::make_pair(other_first, other_second);
         },
-        thrust::make_pair(-FLT_MAX, 0)
+        thrust::make_pair(-max_value<T>(), 0)
     );
 }
 
@@ -156,7 +159,7 @@ void encoder_embedding_launcher(
     int pos_embds_dim_0, int pos_embds_dim_1, int pos_shape_0, int pos_shape_1,
     int batch_size, int batch_seq_len, int hidden_size,
     int pad_id, int start_idx_pos_encodings,
-    T *output, int *pad_mask) 
+    T *output, int *pad_mask)
 {
     assert(pos_embds_dim_0 % 32 == 0);
     assert(pos_embds_dim_1 % 32 == 0);
@@ -174,22 +177,48 @@ template void encoder_embedding_launcher<float>(
     int batch_size, int batch_seq_len, int hidden_size,
     int pad_id, int start_idx_pos_encodings,
     float *output, int *pad_mask);
+template void encoder_embedding_launcher<__half>(
+    const int *input_ids, const __half *tok_embd_weights,
+    const __half *pos_embd_weight_0, const __half *pos_embd_weight_1,
+    int pos_embds_dim_0, int pos_embds_dim_1, int pos_shape_0, int pos_shape_1,
+    int batch_size, int batch_seq_len, int hidden_size,
+    int pad_id, int start_idx_pos_encodings,
+    __half *output, int *pad_mask);
 
 
 template<typename T>
 __global__ void layer_norm(
-    T *input, const T *weight, const T* bias,
-    T eps)
+    T *input, const T *weight, const T* bias, T eps);
+template<>
+__global__ void layer_norm(
+    float *input, const float *weight, const float* bias,
+    float eps)
 {
     int norm_size = blockDim.x;
-    T value = input[blockIdx.x * norm_size + threadIdx.x];
-    T gamma = __ldg(&weight[threadIdx.x]);
-    T beta = __ldg(&bias[threadIdx.x]);
-    T mean = reduce_block_sum(value) / norm_size;
-    T diff = value - mean;
-    T var = diff * diff;
+    float value = input[blockIdx.x * norm_size + threadIdx.x];
+    float gamma = __ldg(&weight[threadIdx.x]);
+    float beta = __ldg(&bias[threadIdx.x]);
+    float mean = reduce_block_sum(value) / norm_size;
+    float diff = value - mean;
+    float var = diff * diff;
     var = reduce_block_sum(var) / norm_size;
     value = diff * rsqrtf(var + eps) * gamma + beta;
+    input[blockIdx.x * norm_size + threadIdx.x] = value;
+}
+template<>
+__global__ void layer_norm(
+    __half *input, const __half *weight, const __half* bias,
+    __half eps)
+{
+    int norm_size = blockDim.x;
+    __half value = input[blockIdx.x * norm_size + threadIdx.x];
+    __half gamma = __ldg(&weight[threadIdx.x]);
+    __half beta = __ldg(&bias[threadIdx.x]);
+    __half mean = reduce_block_sum(value) / __half(norm_size);
+    __half diff = value - mean;
+    __half var = diff * diff;
+    var = reduce_block_sum(var) / __half(norm_size);
+    value = diff * hrsqrt(var + eps) * gamma + beta;
     input[blockIdx.x * norm_size + threadIdx.x] = value;
 }
 /**
@@ -210,12 +239,23 @@ void layer_norm_launcher(
 template void layer_norm_launcher<float>(
     float *input, const float *weight, const float *bias,
     float eps, int norm_size, int size);
+template void layer_norm_launcher<__half>(
+    __half *input, const __half *weight, const __half *bias,
+    __half eps, int norm_size, int size);
 
 
 template<typename T>
-__global__ void bias_relu(T *input, const T *bias) {
-    T value = input[blockIdx.x * blockDim.x + threadIdx.x] + __ldg(&bias[threadIdx.x]);
-    value = max(value, static_cast<T>(0.0f));
+__global__ void bias_relu(T *input, const T *bias);
+template<>
+__global__ void bias_relu(float *input, const float *bias) {
+    float value = input[blockIdx.x * blockDim.x + threadIdx.x] + __ldg(&bias[threadIdx.x]);
+    value = max(value, 0.0f);
+    input[blockIdx.x * blockDim.x + threadIdx.x] = value;
+}
+template<>
+__global__ void bias_relu(__half *input, const __half *bias) {
+    __half value = input[blockIdx.x * blockDim.x + threadIdx.x] + __ldg(&bias[threadIdx.x]);
+    value = max(value, __half(0.0f));
     input[blockIdx.x * blockDim.x + threadIdx.x] = value;
 }
 
@@ -232,8 +272,9 @@ void bias_relu_launcher(
         input, bias);
 }
 template void bias_relu_launcher<float>(
-    float *input, const float *bias,
-    int hidden_size, int size);
+    float *input, const float *bias, int hidden_size, int size);
+template void bias_relu_launcher<__half>(
+    __half *input, const __half *bias, int hidden_size, int size);
 
 
 template<typename T>
@@ -249,9 +290,9 @@ void add_bias_launcher(
         input, bias);
 }
 template void add_bias_launcher<float>(
-    float *input, const float *bias,
-    int hidden_size, int size);
-
+    float *input, const float *bias, int hidden_size, int size);
+template void add_bias_launcher<__half>(
+    __half *input, const __half *bias, int hidden_size, int size);
 
 
 template<typename T>
@@ -271,7 +312,8 @@ void softmax_launcher(
 }
 template void softmax_launcher<float>(
     float *input, int reduce_size, int size);
-
+template void softmax_launcher<__half>(
+    __half *input, int reduce_size, int size);
 
 
 template<typename T>
@@ -312,7 +354,10 @@ template void atten_split_transpose_launcher<float>(
     const float *input, int batch_size, int seq_len,
     int chunk_len, int num_heads, int head_size,
     float *output);
-
+template void atten_split_transpose_launcher<__half>(
+    const __half *input, int batch_size, int seq_len,
+    int chunk_len, int num_heads, int head_size,
+    __half *output);
 
 
 template<typename T>
@@ -351,7 +396,10 @@ template void atten_merge_transpose_launcher<float>(
     const float *input, int batch_size, int seq_len,
     int chunk_len, int num_heads, int head_size,
     float *output);
-
+template void atten_merge_transpose_launcher<__half>(
+    const __half *input, int batch_size, int seq_len,
+    int chunk_len, int num_heads, int head_size,
+    __half *output);
 
 
 template<typename T>
@@ -402,7 +450,10 @@ template void look_adjacent_launcher<float>(
     const float *input, int batch_size, int num_heads, int n_chunks,
     int chunk_len, int head_size, int before, int after,
     float *output);
-
+template void look_adjacent_launcher<__half>(
+    const __half *input, int batch_size, int num_heads, int n_chunks,
+    int chunk_len, int head_size, int before, int after,
+    __half *output);
 
 
 template<typename T>
@@ -437,6 +488,9 @@ void local_atten_enc_mask_launcher(
 template void local_atten_enc_mask_launcher<float>(
     float *qk_dots, const int *mask, float mask_value, int batch_size, int num_heads,
     int n_chunks, int chunk_len, int N);
+template void local_atten_enc_mask_launcher<__half>(
+    __half *qk_dots, const int *mask, __half mask_value, int batch_size, int num_heads,
+    int n_chunks, int chunk_len, int N);
 
 
 template<typename T>
@@ -470,6 +524,9 @@ void repeat_launcher(
 template void repeat_launcher<float>(
     const float *in, int dim0, int dim1, int repeat_num,
     float *out);
+template void repeat_launcher<__half>(
+    const __half *in, int dim0, int dim1, int repeat_num,
+    __half *out);
 
 
 
@@ -482,7 +539,7 @@ __global__ void lsh_bucket_argmax(
     const T *in, int *out)
 {
     // argmax
-    auto p = thrust::make_pair(
+    thrust::pair<float, int> p = thrust::make_pair(
         in[threadIdx.x + blockIdx.x * blockDim.x],
         threadIdx.x
     );
@@ -529,27 +586,11 @@ template void lsh_bucket_argmax_mask_offset_launcher<float>(
     int batch_size, int num_heads, int num_hashes,
     int seq_len, int num_bucket,
     int *out);
-
-
-// __global__ void arrange_last(int *out) {
-//     out[
-//         threadIdx.x +
-//         (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x
-//     ] = threadIdx.x + blockIdx.x * blockDim.x;
-// }
-
-// /**
-//  * @param out [size/last_size, last_size]
-//  */
-// void arrange_last_launcher(
-//     int *out, int last_size, int size)
-// {
-//     // [size/last_size, last_size/blocksize, blocksize]
-//     int blocksize = min(1024, last_size);
-//     dim3 grid(last_size/blocksize, size/last_size);
-//     arrange_last<<<grid, blocksize>>>(out);
-// }
-
+template void lsh_bucket_argmax_mask_offset_launcher<__half>(
+    const __half *in, const int *atten_mask,
+    int batch_size, int num_heads, int num_hashes,
+    int seq_len, int num_bucket,
+    int *out);
 
 
 template<typename T, int ITEMS_PER_THREAD,
@@ -656,7 +697,6 @@ void block_unsigned_radix_sort_launcher(T *in, int *idx, int grid, int N) {
 template void block_unsigned_radix_sort_launcher<int>(int *in, int *idx, int grid, int N);
 
 
-
 __global__ void lsh_scatter_undo_idx(
     int *sorted_idx, int *undo_sorted_idx, int seq_len)
 {
@@ -728,14 +768,29 @@ template void lsh_gather_by_expansion_launcher<float>(
     const float *in, const int *idx, int batch_size,
     int num_heads, int num_hashes, int seq_len, int head_size,
     float *out);
+template void lsh_gather_by_expansion_launcher<__half>(
+    const __half *in, const int *idx, int batch_size,
+    int num_heads, int num_hashes, int seq_len, int head_size,
+    __half *out);
 
 
 template<typename T>
 __global__ void lsh_len_norm(
-    const T *in, T norm_scalar, T *out)
+    const T *in, T norm_scalar, T *out);
+template<>
+__global__ void lsh_len_norm(
+    const float *in, float norm_scalar, float *out)
 {
-    T value = in[threadIdx.x + blockIdx.x * blockDim.x];
-    T rstd = rsqrtf(reduce_block_sum(value * value) / blockDim.x + static_cast<T>(1e-6f));
+    float value = in[threadIdx.x + blockIdx.x * blockDim.x];
+    float rstd = rsqrtf(reduce_block_sum(value * value) / blockDim.x + 1e-6f);
+    out[threadIdx.x + blockIdx.x * blockDim.x] = value * rstd * norm_scalar;
+}
+template<>
+__global__ void lsh_len_norm(
+    const __half *in, __half norm_scalar, __half *out)
+{
+    __half value = in[threadIdx.x + blockIdx.x * blockDim.x];
+    __half rstd = hrsqrt(reduce_block_sum(value * value) / __half(blockDim.x) + __half(1e-6f));
     out[threadIdx.x + blockIdx.x * blockDim.x] = value * rstd * norm_scalar;
 }
 
@@ -747,6 +802,8 @@ void lsh_len_norm_launcher(
 }
 template void lsh_len_norm_launcher<float>(
     const float *in, int norm_size, int size, float norm_scalar, float *out);
+template void lsh_len_norm_launcher<__half>(
+    const __half *in, int norm_size, int size, __half norm_scalar, __half *out);
 
 
 /**
@@ -806,21 +863,39 @@ template void lsh_enc_mask_launcher<float>(
     float *qk_dots, const int *q_idx, const int *k_idx, const int *atten_mask,
     float mask_value, float self_mask_value, int batch_size, int num_heads, int num_hashes,
     int seq_len, int chunk_len, int N);
+template void lsh_enc_mask_launcher<__half>(
+    __half *qk_dots, const int *q_idx, const int *k_idx, const int *atten_mask,
+    __half mask_value, __half self_mask_value, int batch_size, int num_heads, int num_hashes,
+    int seq_len, int chunk_len, int N);
 
 
 /**
  * softmax version that also return logits
  */
 template<typename T>
-__global__ void softmax_with_logits(T *input, T *logits) {
-    T value = input[blockIdx.x * blockDim.x + threadIdx.x];
-    T max_value = reduce_block_max(value);
+__global__ void softmax_with_logits(T *input, T *logits);
+template<>
+__global__ void softmax_with_logits(float *input, float *logits) {
+    float value = input[blockIdx.x * blockDim.x + threadIdx.x];
+    float max_value = reduce_block_max(value);
     value -= max_value;
     value = expf(value);
-    T sum_value = reduce_block_sum(value);
+    float sum_value = reduce_block_sum(value);
     input[blockIdx.x * blockDim.x + threadIdx.x] = value / sum_value;
     if (threadIdx.x == 0) {
         logits[blockIdx.x] = max_value + logf(sum_value);
+    }
+}
+template<>
+__global__ void softmax_with_logits(__half *input, __half *logits) {
+    __half value = input[blockIdx.x * blockDim.x + threadIdx.x];
+    __half max_value = reduce_block_max(value);
+    value -= max_value;
+    value = hexp(value);
+    __half sum_value = reduce_block_sum(value);
+    input[blockIdx.x * blockDim.x + threadIdx.x] = value / sum_value;
+    if (threadIdx.x == 0) {
+        logits[blockIdx.x] = max_value + hlog(sum_value);
     }
 }
 
@@ -832,6 +907,8 @@ void softmax_with_logits_launcher(
 }
 template void softmax_with_logits_launcher<float>(
     float *input, float *logits, int reduce_size, int size);
+template void softmax_with_logits_launcher<__half>(
+    __half *input, __half *logits, int reduce_size, int size);
 
 
 template<typename T>
@@ -878,6 +955,11 @@ template void lsh_undo_sort_launcher<float>(
     int batch_size, int num_heads, int num_hashes,
     int seq_len, int head_size,
     float *rev_vec, float *rev_logits);
+template void lsh_undo_sort_launcher<__half>(
+    const int *undo_sort_idx, const __half *vec, const __half *logits,
+    int batch_size, int num_heads, int num_hashes,
+    int seq_len, int head_size,
+    __half *rev_vec, __half *rev_logits);
 
 
 /**
@@ -891,10 +973,13 @@ template void lsh_undo_sort_launcher<float>(
  */
 template<typename T, int num_hashes>
 __global__ void sum_up_hashes(
-    const T *in, const T *logits, T *out)
+    const T *in, const T *logits, T *out);
+template<int num_hashes>
+__global__ void sum_up_hashes(
+    const float *in, const float *logits, float *out)
 {
-    T vs[num_hashes];
-    T ls[num_hashes];
+    float vs[num_hashes];
+    float ls[num_hashes];
     # pragma unroll
     for (int i = 0; i < num_hashes; i ++) {
         int logits_idx = 
@@ -903,17 +988,48 @@ __global__ void sum_up_hashes(
         vs[i] = in[threadIdx.x + logits_idx * blockDim.x];
         ls[i] = __ldg(&logits[logits_idx]);
     }
-    T logsumexp = static_cast<T>(0.0f);
-    T *max_l = thrust::max_element(thrust::device, ls, ls + num_hashes);
+    float logsumexp = static_cast<float>(0.0f);
+    float *max_l = thrust::max_element(thrust::device, ls, ls + num_hashes);
     # pragma unroll
     for (int i = 0; i < num_hashes; i ++) {
         logsumexp += expf(ls[i] - *max_l);
     }
     logsumexp = logf(logsumexp) + *max_l;
-    T res = static_cast<T>(0.0f);
+    float res = static_cast<float>(0.0f);
     # pragma unroll
     for (int i = 0; i < num_hashes; i ++) {
         res += vs[i] * expf(ls[i] - logsumexp);
+    }
+    out[
+        threadIdx.x +
+        (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x
+    ] = res;
+}
+template<int num_hashes>
+__global__ void sum_up_hashes(
+    const __half *in, const __half *logits, __half *out)
+{
+    __half vs[num_hashes];
+    __half ls[num_hashes];
+    # pragma unroll
+    for (int i = 0; i < num_hashes; i ++) {
+        int logits_idx = 
+            blockIdx.x +
+            (i + blockIdx.y * num_hashes) * gridDim.x;
+        vs[i] = in[threadIdx.x + logits_idx * blockDim.x];
+        ls[i] = __ldg(&logits[logits_idx]);
+    }
+    __half logsumexp = static_cast<__half>(0.0f);
+    __half *max_l = thrust::max_element(thrust::device, ls, ls + num_hashes);
+    # pragma unroll
+    for (int i = 0; i < num_hashes; i ++) {
+        logsumexp += hexp(ls[i] - *max_l);
+    }
+    logsumexp = hlog(logsumexp) + *max_l;
+    __half res = static_cast<__half>(0.0f);
+    # pragma unroll
+    for (int i = 0; i < num_hashes; i ++) {
+        res += vs[i] * hexp(ls[i] - logsumexp);
     }
     out[
         threadIdx.x +
@@ -938,13 +1054,13 @@ void sum_up_hashes_launcher(
                 out);
             break;
         case 2:
-            sum_up_hashes<T, 2><<<grid, block>>>(in, logits, out);
+            sum_up_hashes<2><<<grid, block>>>(in, logits, out);
             break;
         case 4:
-            sum_up_hashes<T, 4><<<grid, block>>>(in, logits, out);
+            sum_up_hashes<4><<<grid, block>>>(in, logits, out);
             break;
         case 8:
-            sum_up_hashes<T, 8><<<grid, block>>>(in, logits, out);
+            sum_up_hashes<8><<<grid, block>>>(in, logits, out);
             break;
         default:
             throw "num_hashes must be 1, 2, 4 or 8";
@@ -955,6 +1071,11 @@ template void sum_up_hashes_launcher<float>(
     int batch_size, int num_heads, int num_hashes,
     int seq_len, int head_size,
     float *out);
+template void sum_up_hashes_launcher<__half>(
+    const __half *in, const __half *logits,
+    int batch_size, int num_heads, int num_hashes,
+    int seq_len, int head_size,
+    __half *out);
 
 
 template<typename T>
@@ -973,6 +1094,7 @@ void add_launcher(T *first, T *second, int size) {
     add<<<size/blocksize, blocksize>>>(first, second);
 }
 template void add_launcher<float>(float *first, float *second, int size);
+template void add_launcher<__half>(__half *first, __half *second, int size);
 
 
 } // namespace FastReformer

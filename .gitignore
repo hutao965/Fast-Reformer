@@ -183,5 +183,5 @@ dmypy.json
 .pyre/
 
 .vscode/
-.ncu-rep
+*.ncu-rep
 bin/

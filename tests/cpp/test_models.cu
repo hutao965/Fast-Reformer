@@ -13,26 +13,26 @@ public:
         _model(weights, config),
         _hidden_size(py2int(config["hidden_size"])) {}
 
-    py::array_t<T> test_chunk_ffn(py::array_t<T> &atten_out) {
+    py::array_t<float> test_chunk_ffn(py::array_t<float> &atten_out) {
         int size = atten_out.size();
-        auto output = py::array_t<T>(size);
-        T *h_atten_out = static_cast<T*>(atten_out.request().ptr);
-        T *h_output = static_cast<T*>(output.request().ptr);
+        auto output = py::array_t<float>(size);
+        float *h_atten_out = static_cast<float*>(atten_out.request().ptr);
+        float *h_output = static_cast<float*>(output.request().ptr);
         thrust::device_vector<T> d_atten_out(h_atten_out, h_atten_out + size);
         _model.enc_layers[0].chunk_ffn(thrust::raw_pointer_cast(d_atten_out.data()));
         thrust::copy(d_atten_out.begin(), d_atten_out.end(), h_output);
         return output;
     }
 
-    py::array_t<T> test_local_atten(
-        py::array_t<T> &hidden_states, py::array_t<int> &atten_mask)
+    py::array_t<float> test_local_atten(
+        py::array_t<float> &hidden_states, py::array_t<int> &atten_mask)
     {
         int size = hidden_states.size();
         int mask_size = atten_mask.size();
-        auto output = py::array_t<T>(size);
-        T *h_hidden_states = static_cast<T*>(hidden_states.request().ptr);
+        auto output = py::array_t<float>(size);
+        float *h_hidden_states = static_cast<float*>(hidden_states.request().ptr);
         int *h_atten_mask = static_cast<int*>(atten_mask.request().ptr);
-        T *h_output = static_cast<T*>(output.request().ptr);
+        float *h_output = static_cast<float*>(output.request().ptr);
         thrust::device_vector<T> d_hidden_states(h_hidden_states, h_hidden_states + size);
         thrust::device_vector<int> d_atten_mask(h_atten_mask, h_atten_mask + mask_size);
         _model.enc_layers[0].local_atten(
@@ -42,16 +42,16 @@ public:
         return output;
     }
 
-    py::array_t<T> test_lsh_atten(
-        py::array_t<T> &hidden_states, py::array_t<int> &atten_mask,
-        py::array_t<T> &random_rotations)
+    py::array_t<float> test_lsh_atten(
+        py::array_t<float> &hidden_states, py::array_t<int> &atten_mask,
+        py::array_t<float> &random_rotations)
     {
         int size = hidden_states.size();
-        auto output = py::array_t<T>(size);
-        T *h_hidden_states = static_cast<T*>(hidden_states.request().ptr);
+        auto output = py::array_t<float>(size);
+        float *h_hidden_states = static_cast<float*>(hidden_states.request().ptr);
         int *h_atten_mask = static_cast<int*>(atten_mask.request().ptr);
-        T *h_random_rotations = static_cast<T*>(random_rotations.request().ptr);
-        T *h_output = static_cast<T*>(output.request().ptr);
+        float *h_random_rotations = static_cast<float*>(random_rotations.request().ptr);
+        float *h_output = static_cast<float*>(output.request().ptr);
         thrust::device_vector<T> d_hidden_states(h_hidden_states, h_hidden_states + size);
         thrust::device_vector<int> d_atten_mask(h_atten_mask, h_atten_mask + atten_mask.size());
         thrust::device_vector<T> d_random_rotations(h_random_rotations, h_random_rotations + random_rotations.size());
@@ -64,18 +64,18 @@ public:
     }
 
     py::tuple test_Reformer_enc_layer(
-        py::array_t<T> &pre_atten_output, py::array_t<T> &hiddens, py::array_t<int> &padding_mask,
-        py::array_t<T> &random_rotations, int layer_id)
+        py::array_t<float> &pre_atten_output, py::array_t<float> &hiddens, py::array_t<int> &padding_mask,
+        py::array_t<float> &random_rotations, int layer_id)
     {
         int size = hiddens.size();
-        auto output = py::array_t<T>(size);
-        auto atten_output = py::array_t<T>(size);
-        T *h_pre_atten_output = static_cast<T*>(pre_atten_output.request().ptr);
-        T *h_hiddens = static_cast<T*>(hiddens.request().ptr);
+        auto output = py::array_t<float>(size);
+        auto atten_output = py::array_t<float>(size);
+        float *h_pre_atten_output = static_cast<float*>(pre_atten_output.request().ptr);
+        float *h_hiddens = static_cast<float*>(hiddens.request().ptr);
         int *h_padding_mask = static_cast<int*>(padding_mask.request().ptr);
-        T *h_random_rotations = static_cast<T*>(random_rotations.request().ptr);
-        T *h_output = static_cast<T*>(output.request().ptr);
-        T *h_atten_output = static_cast<T*>(atten_output.request().ptr);
+        float *h_random_rotations = static_cast<float*>(random_rotations.request().ptr);
+        float *h_output = static_cast<float*>(output.request().ptr);
+        float *h_atten_output = static_cast<float*>(atten_output.request().ptr);
         thrust::device_vector<T> d_pre_atten_output(h_pre_atten_output, h_pre_atten_output + size);
         thrust::device_vector<T> d_hiddens(h_hiddens, h_hiddens + size);
         thrust::device_vector<int> d_padding_mask(h_padding_mask, h_padding_mask + padding_mask.size());
@@ -90,15 +90,15 @@ public:
         return py::make_tuple(output, atten_output);
     }
 
-    py::array_t<T> test_Reformer(
-        py::array_t<int> &input_ids, py::array_t<T> &random_rotations,
+    py::array_t<float> test_Reformer(
+        py::array_t<int> &input_ids, py::array_t<float> &random_rotations,
         int pad_id)
     {
         int output_size = input_ids.size() * _hidden_size * 2;
-        auto output = py::array_t<T>(output_size);
+        auto output = py::array_t<float>(output_size);
         int *h_input_ids = static_cast<int*>(input_ids.request().ptr);
-        T *h_random_rotations = static_cast<T*>(random_rotations.request().ptr);
-        T *h_output = static_cast<T*>(output.request().ptr);
+        float *h_random_rotations = static_cast<float*>(random_rotations.request().ptr);
+        float *h_output = static_cast<float*>(output.request().ptr);
         thrust::device_vector<int> d_input_ids(h_input_ids, h_input_ids + input_ids.size());
         thrust::device_vector<T> d_random_rotations(h_random_rotations, h_random_rotations + random_rotations.size());
         thrust::device_vector<T> d_output(output_size);
@@ -126,5 +126,17 @@ PYBIND11_MODULE(testmodels, m) {
         .def("test_Reformer_enc_layer", &TestModels<FloatType::FP32>::test_Reformer_enc_layer,
              py::return_value_policy::reference_internal)
         .def("test_Reformer", &TestModels<FloatType::FP32>::test_Reformer,
+             py::return_value_policy::reference_internal);
+    py::class_<TestModels<FloatType::FP16>>(m, "TestModels_fp16")
+        .def(py::init<py::dict &, py::dict &>())
+        .def("test_chunk_ffn", &TestModels<FloatType::FP16>::test_chunk_ffn,
+             py::return_value_policy::reference_internal)
+        .def("test_local_atten", &TestModels<FloatType::FP16>::test_local_atten,
+             py::return_value_policy::reference_internal)
+        .def("test_lsh_atten", &TestModels<FloatType::FP16>::test_lsh_atten,
+             py::return_value_policy::reference_internal)
+        .def("test_Reformer_enc_layer", &TestModels<FloatType::FP16>::test_Reformer_enc_layer,
+             py::return_value_policy::reference_internal)
+        .def("test_Reformer", &TestModels<FloatType::FP16>::test_Reformer,
              py::return_value_policy::reference_internal);
 }

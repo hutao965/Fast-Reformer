@@ -25,17 +25,17 @@ public:
         int pos_shape_1 = py2int(pos_shapes[1]);
         int mask_size = batch_size * batch_seq_len;
         int output_size = batch_size * batch_seq_len * hidden_size;
-        auto output = py::array_t<T>(output_size);
+        auto output = py::array_t<float>(output_size);
         auto padding_mask = py::array_t<int>(mask_size);
 
         int *h_input_ids = static_cast<int*>(input_ids.request().ptr);
-        T *h_tok_embd_weights = static_cast<T*>(
-            py::array_t<T>(_weights["embeddings.word_embeddings.weight"]).request().ptr);
-        T *h_pos_embd_weight_0 = static_cast<T*>(
-            py::array_t<T>(_weights["embeddings.position_embeddings.weights.0"]).request().ptr);
-        T *h_pos_embd_weight_1 = static_cast<T*>(
-            py::array_t<T>(_weights["embeddings.position_embeddings.weights.1"]).request().ptr);
-        T *h_output = static_cast<T*>(output.request().ptr);
+        float *h_tok_embd_weights = static_cast<float*>(
+            py::array_t<float>(_weights["embeddings.word_embeddings.weight"]).request().ptr);
+        float *h_pos_embd_weight_0 = static_cast<float*>(
+            py::array_t<float>(_weights["embeddings.position_embeddings.weights.0"]).request().ptr);
+        float *h_pos_embd_weight_1 = static_cast<float*>(
+            py::array_t<float>(_weights["embeddings.position_embeddings.weights.1"]).request().ptr);
+        float *h_output = static_cast<float*>(output.request().ptr);
         int *h_pad_mask = static_cast<int*>(padding_mask.request().ptr);
 
         thrust::device_vector<int> d_input_ids(h_input_ids, h_input_ids + mask_size);
@@ -61,15 +61,15 @@ public:
         return py::make_tuple(output, padding_mask);
     }
     
-    py::array_t<T> test_encoder_layer_norm(py::array_t<T> &input, int norm_size) {
+    py::array_t<float> test_encoder_layer_norm(py::array_t<float> &input, int norm_size) {
         int size = input.size();
-        auto output = py::array_t<T>(size);
-        T *h_input = static_cast<T*>(input.request().ptr);
-        T *h_ln_weight = static_cast<T*>(
-            py::array_t<T>(_weights["encoder.layer_norm.weight"]).request().ptr);
-        T *h_ln_bias = static_cast<T*>(
-            py::array_t<T>(_weights["encoder.layer_norm.bias"]).request().ptr);
-        T *h_output = static_cast<T*>(output.request().ptr);
+        auto output = py::array_t<float>(size);
+        float *h_input = static_cast<float*>(input.request().ptr);
+        float *h_ln_weight = static_cast<float*>(
+            py::array_t<float>(_weights["encoder.layer_norm.weight"]).request().ptr);
+        float *h_ln_bias = static_cast<float*>(
+            py::array_t<float>(_weights["encoder.layer_norm.bias"]).request().ptr);
+        float *h_output = static_cast<float*>(output.request().ptr);
         T eps = static_cast<T>(py2float(_config["layer_norm_eps"]));
 
         thrust::device_vector<T> d_input(h_input, h_input + size);
@@ -84,13 +84,13 @@ public:
         return output;
     }
 
-    py::array_t<T> test_bias_relu(py::array_t<T> &input, py::array_t<T> &bias) {
+    py::array_t<float> test_bias_relu(py::array_t<float> &input, py::array_t<float> &bias) {
         int size = input.size();
         int hidden_size = bias.size();
-        auto output = py::array_t<T>(size);
-        T *h_input = static_cast<T*>(input.request().ptr);
-        T *h_bias = static_cast<T*>(bias.request().ptr);
-        T *h_output = static_cast<T*>(output.request().ptr);
+        auto output = py::array_t<float>(size);
+        float *h_input = static_cast<float*>(input.request().ptr);
+        float *h_bias = static_cast<float*>(bias.request().ptr);
+        float *h_output = static_cast<float*>(output.request().ptr);
         thrust::device_vector<T> d_input(h_input, h_input + size);
         thrust::device_vector<T> d_bias(h_bias, h_bias + hidden_size);
         bias_relu_launcher<T>(
@@ -101,13 +101,13 @@ public:
         return output;
     }
 
-    py::array_t<T> test_softmax(py::array_t<T> &input)
+    py::array_t<float> test_softmax(py::array_t<float> &input)
     {
         int size = input.size();
         int reduce_size = input.shape(2);
-        auto output = py::array_t<T>(size);
-        T *h_input = static_cast<T*>(input.request().ptr);
-        T *h_output = static_cast<T*>(output.request().ptr);
+        auto output = py::array_t<float>(size);
+        float *h_input = static_cast<float*>(input.request().ptr);
+        float *h_output = static_cast<float*>(output.request().ptr);
         thrust::device_vector<T> d_input(h_input, h_input + size);
         softmax_launcher<T>(
             thrust::raw_pointer_cast(d_input.data()),
@@ -129,5 +129,15 @@ PYBIND11_MODULE(testkernels, m) {
         .def("test_softmax", &TestKernels<FloatType::FP32>::test_softmax,
              py::return_value_policy::reference_internal)
         .def("test_bias_relu", &TestKernels<FloatType::FP32>::test_bias_relu,
+             py::return_value_policy::reference_internal);
+    py::class_<TestKernels<FloatType::FP16>>(m, "TestKernels_fp16")
+        .def(py::init<py::dict &, py::dict &>())
+        .def("test_encoder_embedding", &TestKernels<FloatType::FP16>::test_encoder_embedding,
+             py::return_value_policy::reference_internal)
+        .def("test_encoder_layer_norm", &TestKernels<FloatType::FP16>::test_encoder_layer_norm,
+             py::return_value_policy::reference_internal)
+        .def("test_softmax", &TestKernels<FloatType::FP16>::test_softmax,
+             py::return_value_policy::reference_internal)
+        .def("test_bias_relu", &TestKernels<FloatType::FP16>::test_bias_relu,
              py::return_value_policy::reference_internal);
 }

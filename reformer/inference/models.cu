@@ -12,8 +12,8 @@ private:
     const cudaDataType_t _cublasAType = traits::cublasAType;
     const cudaDataType_t _cublasBType = traits::cublasBType;
     const cudaDataType_t _cublasCType = traits::cublasCType;
-    const T _mask_value = traits::mask_value;
-    const T _self_mask_value = traits::self_mask_value;
+    const T _mask_value = T(traits::mask_value);
+    const T _self_mask_value = T(traits::self_mask_value);
     cudaStream_t _stream;
     cublasHandle_t _cublasHandle;
 
@@ -89,46 +89,46 @@ public:
         _norm_scalar(1/sqrt(_head_size))
     {
         // assign weights
-        T *h_atten_ln_weight = static_cast<T*>(py::array_t<T>(weights[
+        float *h_atten_ln_weight = static_cast<float*>(py::array_t<float>(weights[
             py::cast("encoder.layers." + std::to_string(_layer_id) + ".attention.layer_norm.weight")]).request().ptr);
-        T *h_atten_ln_bias = static_cast<T*>(py::array_t<T>(weights[
+        float *h_atten_ln_bias = static_cast<float*>(py::array_t<float>(weights[
             py::cast("encoder.layers." + std::to_string(_layer_id) + ".attention.layer_norm.bias")]).request().ptr);
         _d_atten_ln_weight.assign(h_atten_ln_weight, h_atten_ln_weight + _hidden_size);
         _d_atten_ln_bias.assign(h_atten_ln_bias, h_atten_ln_bias + _hidden_size);
         if (_layer_type == "lsh") {
-            T *h_atten_lsh_proj_qk_weight = static_cast<T*>(py::array_t<T>(weights[
+            float *h_atten_lsh_proj_qk_weight = static_cast<float*>(py::array_t<float>(weights[
                 py::cast("encoder.layers." + std::to_string(_layer_id) + ".attention.self_attention.query_key.weight")]).request().ptr);
-            T *h_atten_lsh_proj_v_weight = static_cast<T*>(py::array_t<T>(weights[
+            float *h_atten_lsh_proj_v_weight = static_cast<float*>(py::array_t<float>(weights[
                 py::cast("encoder.layers." + std::to_string(_layer_id) + ".attention.self_attention.value.weight")]).request().ptr);
             _d_atten_lsh_proj_qk_weight.assign(h_atten_lsh_proj_qk_weight, h_atten_lsh_proj_qk_weight + _hidden_size * _all_head_size);
             _d_atten_lsh_proj_v_weight.assign(h_atten_lsh_proj_v_weight, h_atten_lsh_proj_v_weight + _hidden_size * _all_head_size);
         }
         else { // "local"
-            T *h_atten_local_proj_q_weight = static_cast<T*>(py::array_t<T>(weights[
+            float *h_atten_local_proj_q_weight = static_cast<float*>(py::array_t<float>(weights[
                 py::cast("encoder.layers." + std::to_string(_layer_id) + ".attention.self_attention.query.weight")]).request().ptr);
-            T *h_atten_local_proj_k_weight = static_cast<T*>(py::array_t<T>(weights[
+            float *h_atten_local_proj_k_weight = static_cast<float*>(py::array_t<float>(weights[
                 py::cast("encoder.layers." + std::to_string(_layer_id) + ".attention.self_attention.key.weight")]).request().ptr);
-            T *h_atten_local_proj_v_weight = static_cast<T*>(py::array_t<T>(weights[
+            float *h_atten_local_proj_v_weight = static_cast<float*>(py::array_t<float>(weights[
                 py::cast("encoder.layers." + std::to_string(_layer_id) + ".attention.self_attention.value.weight")]).request().ptr);
             _d_atten_local_proj_q_weight.assign(h_atten_local_proj_q_weight, h_atten_local_proj_q_weight + _hidden_size * _all_head_size);
             _d_atten_local_proj_k_weight.assign(h_atten_local_proj_k_weight, h_atten_local_proj_k_weight + _hidden_size * _all_head_size);
             _d_atten_local_proj_v_weight.assign(h_atten_local_proj_v_weight, h_atten_local_proj_v_weight + _hidden_size * _all_head_size);
         }
-        T *h_atten_output_proj_weight = static_cast<T*>(py::array_t<T>(weights[
+        float *h_atten_output_proj_weight = static_cast<float*>(py::array_t<float>(weights[
             py::cast("encoder.layers." + std::to_string(_layer_id) + ".attention.output.dense.weight")]).request().ptr);
         _d_atten_output_proj_weight.assign(h_atten_output_proj_weight, h_atten_output_proj_weight + _hidden_size * _all_head_size);
 
-        T *h_ffn_ln_weight = static_cast<T*>(py::array_t<T>(weights[
+        float *h_ffn_ln_weight = static_cast<float*>(py::array_t<float>(weights[
             py::cast("encoder.layers." + std::to_string(_layer_id) + ".feed_forward.layer_norm.weight")]).request().ptr);
-        T *h_ffn_ln_bias = static_cast<T*>(py::array_t<T>(weights[
+        float *h_ffn_ln_bias = static_cast<float*>(py::array_t<float>(weights[
             py::cast("encoder.layers." + std::to_string(_layer_id) + ".feed_forward.layer_norm.bias")]).request().ptr);
-        T *h_ffn_dense_weight = static_cast<T*>(py::array_t<T>(weights[
+        float *h_ffn_dense_weight = static_cast<float*>(py::array_t<float>(weights[
             py::cast("encoder.layers." + std::to_string(_layer_id) + ".feed_forward.dense.dense.weight")]).request().ptr);
-        T *h_ffn_dense_bias = static_cast<T*>(py::array_t<T>(weights[
+        float *h_ffn_dense_bias = static_cast<float*>(py::array_t<float>(weights[
             py::cast("encoder.layers." + std::to_string(_layer_id) + ".feed_forward.dense.dense.bias")]).request().ptr);
-        T *h_ffn_output_weight = static_cast<T*>(py::array_t<T>(weights[
+        float *h_ffn_output_weight = static_cast<float*>(py::array_t<float>(weights[
             py::cast("encoder.layers." + std::to_string(_layer_id) + ".feed_forward.output.dense.weight")]).request().ptr);
-        T *h_ffn_output_bias = static_cast<T*>(py::array_t<T>(weights[
+        float *h_ffn_output_bias = static_cast<float*>(py::array_t<float>(weights[
             py::cast("encoder.layers." + std::to_string(_layer_id) + ".feed_forward.output.dense.bias")]).request().ptr);
         _d_ffn_ln_weight.assign(h_ffn_ln_weight, h_ffn_ln_weight + _hidden_size);
         _d_ffn_ln_bias.assign(h_ffn_ln_bias, h_ffn_ln_bias + _hidden_size);
@@ -752,15 +752,15 @@ public:
         }
 
         // set weights
-        T *h_tok_embed_weight = static_cast<T*>(py::array_t<T>(weights[
+        float *h_tok_embed_weight = static_cast<float*>(py::array_t<float>(weights[
             py::cast("embeddings.word_embeddings.weight")]).request().ptr);
-        T *h_pos_embed_weight_0 = static_cast<T*>(py::array_t<T>(weights[
+        float *h_pos_embed_weight_0 = static_cast<float*>(py::array_t<float>(weights[
             py::cast("embeddings.position_embeddings.weights.0")]).request().ptr);
-        T *h_pos_embed_weight_1 = static_cast<T*>(py::array_t<T>(weights[
+        float *h_pos_embed_weight_1 = static_cast<float*>(py::array_t<float>(weights[
             py::cast("embeddings.position_embeddings.weights.1")]).request().ptr);
-        T *h_enc_ln_weight = static_cast<T*>(py::array_t<T>(weights[
+        float *h_enc_ln_weight = static_cast<float*>(py::array_t<float>(weights[
             py::cast("encoder.layer_norm.weight")]).request().ptr);
-        T *h_enc_ln_bias = static_cast<T*>(py::array_t<T>(weights[
+        float *h_enc_ln_bias = static_cast<float*>(py::array_t<float>(weights[
             py::cast("encoder.layer_norm.bias")]).request().ptr);
         
         _d_tok_embed_weight.assign(h_tok_embed_weight, h_tok_embed_weight + _vocab_size * _hidden_size);
@@ -843,6 +843,7 @@ public:
     }
 };
 template class ReformerModel<FloatType::FP32>;
+template class ReformerModel<FloatType::FP16>;
 
 
 } // namespace FastReformer

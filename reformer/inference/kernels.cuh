@@ -21,11 +21,11 @@ template<typename T>
 void bias_relu_launcher(
     T *input, const T *bias,
     int hidden_size, int size);
+
 template<typename T>
 void add_bias_launcher(
     T *input, const T *bias,
     int hidden_size, int size);
-
 
 template<typename T>
 void softmax_launcher(
@@ -66,8 +66,6 @@ void lsh_bucket_argmax_mask_offset_launcher(
     int seq_len, int num_bucket,
     int *out);
 
-// void arrange_last_launcher(
-//     int *out, int last_size, int size);
 template<typename T>
 void block_unsigned_radix_sort_launcher(T *in, int *idx, int grid, int N);
 

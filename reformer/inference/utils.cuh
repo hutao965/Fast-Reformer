@@ -34,10 +34,21 @@ public:
     static const cudaDataType_t cublasAType = CUDA_R_32F;
     static const cudaDataType_t cublasBType = CUDA_R_32F;
     static const cudaDataType_t cublasCType = CUDA_R_32F;
-    static constexpr DataType mask_value = -1e9f;
-    static constexpr DataType self_mask_value = -1e5f;
+    static constexpr float mask_value = -1e9f;
+    static constexpr float self_mask_value = -1e5f;
 };
 
+template<>
+class TypeTraits<FloatType::FP16> {
+public:
+    using DataType = __half;
+    static const cudaDataType_t cublasComputeType = CUDA_R_16F;
+    static const cudaDataType_t cublasAType = CUDA_R_16F;
+    static const cudaDataType_t cublasBType = CUDA_R_16F;
+    static const cudaDataType_t cublasCType = CUDA_R_16F;
+    static constexpr float mask_value = -1e4f;
+    static constexpr float self_mask_value = -1e3f;
+};
 
 
 // allocate __constant__ or reigster directly
