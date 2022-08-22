@@ -21,9 +21,9 @@ sh test.sh
     - [x] block radix sort
 - [x] unit test
   - [x] pybind
-- [ ] profiling
+- [x] profiling
   - [x] fp32 speed up 38.63%
-  - [ ] fp16
+  - [x] fp16 speed up 40.64%
 
 # Ref
 - [lightseq](https://github.com/bytedance/lightseq)

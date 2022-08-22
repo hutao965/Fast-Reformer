@@ -79,7 +79,7 @@ class Test(unittest.TestCase):
             ),
             device="cuda"
         )
-        return np.swapaxes(random_rotations.detach().cpu().numpy(), 1, 2).copy().astype(np.float)
+        return np.swapaxes(random_rotations.detach().cpu().numpy(), 1, 2).copy()
 
     def test_encoder_embedding(self):
         start_idx_pos_encodings = \

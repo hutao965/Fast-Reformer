@@ -91,7 +91,7 @@ class Profile():
         with profiler.profile():
             hf_result = self.hf_model.encoder.layers[0].attention(
                 hidden_states.cuda().half(),
-                attention_mask=padding_mask.cuda().half()
+                attention_mask=padding_mask.cuda()
             )
         with profiler.profile():
             fast_result = self.test_models.test_local_atten(
